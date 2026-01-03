@@ -1,6 +1,8 @@
 # PySpark - PI Cluster - MapReduce
 In this repository the configuration and motivation behind design decisions of the pi cluster using PySpark is documented.
 
+📚 **[Documentation Index](DOCUMENTATION_INDEX.md)** - Complete guide to all documentation
+
 **Research questions**
 1.  How does MapReduce theory translate to practice?
     - How is the data distributed?
@@ -11,7 +13,8 @@ In this repository the configuration and motivation behind design decisions of t
     - Specifically, for the GreedySubmodular 0.5-approximation algorithm for the maximum coverage problem on a point set P using a set of k circles.
 
 ## 1. Cluster configuration
-All nodes are Raspberry Pi 5 devices; the master has an attached 256 GB SSD while the workers use 64 GB SD cards. 
+
+All nodes are Raspberry Pi 5 devices; the master has an attached 256 GB SSD while the workers use 64 GB SD cards.
 
 | Node | Role | Cores | RAM | Storage |
 | --- | --- | ---: | ---: | --- |
@@ -19,9 +22,13 @@ All nodes are Raspberry Pi 5 devices; the master has an attached 256 GB SSD whil
 | `applepi` | **worker** | 4 | 8 GB | 64 GB SD card |
 | `blueberrypi` | **worker** | 4 | 8 GB | 64 GB SD card |
 
-> **NOTE:** We must also ensure that our network and SSH configuration allow the nodes to communicate. Furthermore, we must also consider that the master worker will likely be an NFS storage pool for all the partitions to be fetched from initially. Or, dedicate an extra node for storage?
+**Setup guides:**
+- 📘 **[PI_CLUSTER_SETUP.md](PI_CLUSTER_SETUP.md)** - Complete cluster setup and deployment guide
+- 🚀 **[QUICK_START.md](QUICK_START.md)** - Quick reference for daily operations
 
->**TODO:** bill of materials
+**Network configuration:** Static IPs via Ethernet, SSH passwordless access between nodes
+
+**Storage architecture:** Master's SSD shared via NFS to all workers at `/data`
 
 ## 2. PySpark - GreedySubmodular - CircleCover problem
 Translating theory to practice.
@@ -54,4 +61,105 @@ Thus, we have figured out, roughly, how much memory will be used to stay on the 
 > **NOTE:** The executors will still have to fetch the partitions from some shared storage pool to memory.
 
 ### 2.3 Translating mappers and reducers to code
-> TODO: figure out how
+Implementation complete! See [PLAN.md](PLAN.md) for full design details.
+
+## 3. Implementation
+
+The PySpark implementation is now complete. See [PLAN.md](PLAN.md) for detailed design documentation.
+
+### 3.1 Setup
+
+1. **Create virtual environment and install dependencies:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+2. **Verify installation:**
+```bash
+python3 -m pytest tests/test_geometry.py -v
+```
+
+### 3.2 Quick Start
+
+**Generate a small dataset and run the algorithm:**
+
+```bash
+# Generate data
+python3 scripts/generate_data.py \
+    --config configs/small_experiment.yaml \
+    --output-dir data/raw/small
+
+# Run algorithm
+python3 src/main.py \
+    --points data/raw/small/points \
+    --circles data/raw/small/circles \
+    --k 5 \
+    --output data/results/small
+```
+
+**Or run a complete experiment (generates data and runs algorithm):**
+
+```bash
+python3 scripts/run_experiment.py \
+    --config configs/small_experiment.yaml \
+    --generate-data
+```
+
+### 3.3 Running on Pi Cluster
+
+1. **Set up Spark cluster** (on master node):
+```bash
+# Start master
+$SPARK_HOME/sbin/start-master.sh
+
+# On each worker node:
+$SPARK_HOME/sbin/start-worker.sh spark://raspberrypi:7077
+```
+
+2. **Submit job to cluster:**
+```bash
+spark-submit \
+    --master spark://raspberrypi:7077 \
+    --executor-memory 3g \
+    --executor-cores 2 \
+    --num-executors 6 \
+    scripts/run_experiment.py \
+    --config configs/medium_experiment.yaml \
+    --master spark://raspberrypi:7077 \
+    --generate-data
+```
+
+### 3.4 Experiment Configurations
+
+Three pre-configured experiments are available:
+
+| Config | Points | Circles | k | Expected Runtime |
+|--------|--------|---------|---|------------------|
+| `small_experiment.yaml` | 10K | 1K | 5 | < 1 min |
+| `medium_experiment.yaml` | 1M | 10K | 10 | ~10 min |
+| `large_experiment.yaml` | 10M | 50K | 20 | 1-2 hours |
+
+### 3.5 Testing
+
+```bash
+# Run geometry tests
+python3 -m pytest tests/test_geometry.py -v
+
+# Run algorithm integration tests (requires PySpark)
+python3 -m pytest tests/test_algorithm.py -v
+
+# Or run all tests
+python3 -m pytest tests/ -v
+```
+
+### 3.6 Project Structure
+
+See [PLAN.md](PLAN.md) for complete project structure. Key files:
+
+- `src/algorithm/greedy_submodular.py` - Main algorithm implementation
+- `src/mapreduce/mappers.py` - Map functions for gain computation and coverage updates
+- `src/mapreduce/reducers.py` - Reduce functions for aggregation
+- `src/data/generators.py` - Synthetic data generation
+- `src/config/spark_config.py` - Pi cluster optimized Spark configuration

@@ -1,1 +1,9 @@
 pyspark
+pyarrow
+pandas
+numpy
+pyyaml
+scikit-learn
+matplotlib
+seaborn
+jupyter

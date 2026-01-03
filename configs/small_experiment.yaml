@@ -1,0 +1,24 @@
+# Small scale experiment configuration
+# 10K points, 1K circles, k=5
+# Expected runtime: < 1 minute
+
+algorithm:
+  k: 5
+  checkpoint_interval: 5
+  checkpoint_dir: null  # No checkpointing for small scale
+
+points:
+  type: "uniform"  # uniform, clustered, or grid
+  n_points: 10000
+  bounds: [[0, 1000], [0, 1000]]
+  seed: 42
+
+circles:
+  type: "random"  # random, grid, or point_centered
+  n_circles: 1000
+  radius: 50.0
+  bounds: [[0, 1000], [0, 1000]]
+  seed: 42
+
+output:
+  dir: "data/results/small_experiment"
