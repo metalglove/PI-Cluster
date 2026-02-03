@@ -273,6 +273,9 @@ def find_max_single_coverage(
         .map(compute_single_coverage) \
         .collect()
 
+    # Clean up broadcast to free memory
+    points_bc.unpersist()
+
     # Find maximum
     best_idx, best_coverage = max(results, key=lambda x: x[1])
     return best_idx, best_coverage
@@ -312,6 +315,10 @@ def find_candidate_above_threshold(
         .filter(lambda x: x[1] >= threshold) \
         .collect()
 
+    # Clean up broadcasts to free memory
+    points_bc.unpersist()
+    current_set_bc.unpersist()
+
     if not results:
         return None, 0
 
@@ -325,21 +332,15 @@ def greedy_threshold_single(
     k: int,
     threshold: float,
     spark: SparkSession,
-    ui_client: Optional[UIClient] = None,
-    current_coverage_base: int = 0
-) -> List[Circle]:
+    ui_client: Optional[UIClient] = None
+) -> Tuple[List[Circle], int]:
     """
     Single run of greedy thresholding with a fixed threshold τ.
     Adds circles whose marginal gain >= threshold until |S| = k or no candidates.
+    
+    Returns (selected_circles, total_coverage).
     """
     selected = []
-    current_coverage = 0  # We can track coverage cumulatively if we assume non-overlapping gain, 
-                          # but better to recompute or trust the gain? 
-                          # Gain is accurate for specific points.
-                          
-    # Re-computing exact coverage might be expensive if done every step, 
-    # but we have gain. New Coverage = Old Coverage + Gain.
-    
     current_total_coverage = 0
     
     remaining = set(range(len(circles)))
@@ -361,7 +362,7 @@ def greedy_threshold_single(
         if ui_client:
             ui_client.send_circle_added(circle, gain, threshold, current_total_coverage, step + 1)
 
-    return selected
+    return selected, current_total_coverage
 
 
 def greedy_with_guesses(
@@ -414,8 +415,7 @@ def greedy_with_guesses(
             ui_client.send_start_guess(j, threshold)
 
         # Run greedy with this threshold
-        solution = greedy_threshold_single(circles, points, k, threshold, spark, ui_client)
-        coverage = compute_coverage(solution, points)
+        solution, coverage = greedy_threshold_single(circles, points, k, threshold, spark, ui_client)
 
         print(f"    Selected {len(solution)} circles, coverage = {coverage}")
 
@@ -423,6 +423,11 @@ def greedy_with_guesses(
             best_coverage = coverage
             best_solution = solution
             best_j = j
+
+        # Early termination if full coverage achieved
+        if best_coverage == len(points):
+            print("  Full coverage achieved - stopping early!")
+            break
 
     return best_solution, best_coverage, best_j
 
