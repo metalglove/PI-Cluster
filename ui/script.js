@@ -16,6 +16,12 @@ let circles = []; // Array of {cx, cy, r, animRadius}
 let bounds = { minX: 0, maxX: 1000, minY: 0, maxY: 1000 };
 let metrics = { k: 0, coverage: 0, j: 0 };
 let isReplaying = false;
+let sampling = {
+    isSampled: false,
+    displayed: 0,
+    total: 0,
+    percentage: 100
+};
 
 let ws;
 const statusEl = document.getElementById('status');
@@ -229,12 +235,38 @@ function handleMessage(msg) {
             bounds = msg.bounds;
             circles = [];
 
+            // Handle sampling metadata
+            if (msg.sampling && msg.sampling.is_sampled) {
+                sampling = {
+                    isSampled: true,
+                    displayed: msg.sampling.displayed,
+                    total: msg.sampling.total,
+                    percentage: msg.sampling.percentage
+                };
+                console.log(`UI showing ${sampling.displayed} / ${sampling.total} points (${sampling.percentage}%)`);
+            } else {
+                sampling = {
+                    isSampled: false,
+                    displayed: msg.points.length,
+                    total: msg.points.length,
+                    percentage: 100
+                };
+            }
+
             // Update Config
             if (msg.config) {
-                document.getElementById('conf-points').textContent = msg.config.n_points;
+                // Display actual dataset size (not just displayed points)
+                const pointsDisplay = sampling.isSampled
+                    ? `${sampling.total.toLocaleString()} (${sampling.displayed.toLocaleString()} shown)`
+                    : msg.config.n_points.toLocaleString();
+
+                document.getElementById('conf-points').textContent = pointsDisplay;
                 document.getElementById('conf-circles').textContent = msg.config.n_circles;
                 document.getElementById('conf-k').textContent = msg.config.k;
                 document.getElementById('conf-eps').textContent = msg.config.epsilon;
+
+                // Add sampling badge if sampled
+                updateSamplingDisplay();
             }
 
             // Reset charts
@@ -320,6 +352,38 @@ function handleMessage(msg) {
     }
 }
 
+// --- Sampling Display ---
+function updateSamplingDisplay() {
+    // Remove existing sampling badge if any
+    const existingBadge = document.getElementById('sampling-badge');
+    if (existingBadge) {
+        existingBadge.remove();
+    }
+
+    if (sampling.isSampled) {
+        // Create and insert sampling badge
+        const configSection = document.querySelector('.config-section');
+        if (configSection) {
+            const badge = document.createElement('div');
+            badge.id = 'sampling-badge';
+            badge.className = 'sampling-badge';
+            badge.innerHTML = `
+                <span class="badge-icon">👁️</span>
+                <span class="badge-text">
+                    Showing ${sampling.displayed.toLocaleString()} / 
+                    ${sampling.total.toLocaleString()} points
+                    (${sampling.percentage}% sample)
+                </span>
+            `;
+            // Insert after config items
+            const configItems = configSection.querySelector('.config-items');
+            if (configItems) {
+                configItems.insertAdjacentElement('afterend', badge);
+            }
+        }
+    }
+}
+
 // --- Init ---
 animate(); // Start canvas loop
 connect();
@@ -360,9 +424,17 @@ runBtn.addEventListener('click', async () => {
         statusEl.textContent = 'STARTING...';
         runBtn.disabled = true;
 
-        // Use fetch with timeout or fire-and-forget logic if needed
-        // Assuming current viz_server handles it well
-        const res = await fetch('/run', { method: 'POST' });
+        // Get selected job size
+        const selectedSize = document.querySelector('input[name="jobSize"]:checked').value;
+
+        // Send job size to backend
+        const res = await fetch('/run', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ size: selectedSize })
+        });
         const data = await res.json();
 
         if (data.status === 'started') {

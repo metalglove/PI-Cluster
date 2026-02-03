@@ -151,6 +151,35 @@
                             <span id="worker-text">Workers Idle</span>
                         </div>
                     </div>
+
+                    <!-- Job Size Selection -->
+                    <div class="job-size-selector">
+                        <label class="size-label">Dataset Size:</label>
+                        <div class="size-options">
+                            <label class="size-option">
+                                <input type="radio" name="jobSize" value="small" checked>
+                                <span class="size-info">
+                                    <span class="size-name">Small</span>
+                                    <span class="size-desc">2K points</span>
+                                </span>
+                            </label>
+                            <label class="size-option">
+                                <input type="radio" name="jobSize" value="medium">
+                                <span class="size-info">
+                                    <span class="size-name">Medium</span>
+                                    <span class="size-desc">25K points</span>
+                                </span>
+                            </label>
+                            <label class="size-option">
+                                <input type="radio" name="jobSize" value="large">
+                                <span class="size-info">
+                                    <span class="size-name">Large</span>
+                                    <span class="size-desc">100K points</span>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+
                     <button id="runBtn" class="run-btn">Run New Simulation</button>
 
                     <div class="queue-list" id="job-queue">

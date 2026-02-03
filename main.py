@@ -35,7 +35,16 @@ def create_spark_session(app_name: str = "CircleCover", cluster_mode: bool = Fal
             .config("spark.executor.cores", "4") \
             .config("spark.cores.max", "8")
     else:
-        builder = builder.master("local[*]")
+        # Local mode optimizations for better performance
+        import multiprocessing
+        num_cores = multiprocessing.cpu_count()
+        
+        builder = builder.master(f"local[{num_cores}]") \
+            .config("spark.driver.memory", "4g") \
+            .config("spark.sql.shuffle.partitions", "8") \
+            .config("spark.default.parallelism", str(num_cores * 2)) \
+            .config("spark.driver.maxResultSize", "2g") \
+            .config("spark.local.dir", "./spark-temp")
 
     return builder.getOrCreate()
 
@@ -120,6 +129,130 @@ def generate_circles(
         circles.append((cx, cy, r))
 
     return circles
+
+
+# =============================================================================
+# PARTITIONING & SAMPLING
+# =============================================================================
+
+def calculate_partitions(n_points: int, target_mb: int = 160, cores: int = 16, local_mode: bool = False) -> int:
+    """
+    Calculate optimal number of partitions based on data size and cluster resources.
+    
+    Args:
+        n_points: Number of points in dataset
+        target_mb: Target size per partition in MB (128-192 MB recommended for Pi cluster)
+        cores: Total cores available in cluster (default: 16 for 4-node Pi cluster)
+        local_mode: If True, optimize for local single-machine execution
+    
+    Returns:
+        Optimal number of partitions
+    """
+    # Estimate: ~32 bytes per point (x, y, id, metadata)
+    data_size_mb = (n_points * 32) / (1024 * 1024)
+    
+    if local_mode:
+        # Local mode: fewer partitions to reduce overhead
+        # For small datasets, use minimal partitions
+        if n_points < 10000:
+            return cores  # 1 partition per core
+        elif n_points < 100000:
+            return cores * 2  # 2 partitions per core
+        else:
+            # For larger datasets, still limit partitions
+            return min(cores * 4, int(data_size_mb / 50))  # Larger chunks (50MB)
+    else:
+        # Cluster mode: original logic
+        # Calculate based on data size
+        optimal = max(1, int(data_size_mb / target_mb))
+        
+        # Also consider available cores (2-3x parallelism)
+        min_partitions = cores * 2
+        
+        return max(optimal, min_partitions)
+
+
+def sample_points_for_ui(
+    points_rdd,
+    max_display: int = 5000,
+    seed: int = 42
+) -> Tuple[List[Point], int]:
+    """
+    Sample points uniformly for UI visualization.
+    
+    Args:
+        points_rdd: Full RDD of points
+        max_display: Maximum points to send to UI
+        seed: Random seed for reproducibility
+    
+    Returns:
+        Tuple of (sampled_points_list, total_count)
+    """
+    total_points = points_rdd.count()
+    
+    if total_points <= max_display:
+        # Small dataset - send all points
+        return points_rdd.collect(), total_points
+    
+    # Calculate sampling fraction
+    fraction = max_display / total_points
+    
+    # Use RDD.sample() for distributed sampling
+    sampled = points_rdd.sample(
+        withReplacement=False,
+        fraction=fraction,
+        seed=seed
+    )
+    sampled_points = sampled.collect()
+    
+    print(f"UI Sampling: {len(sampled_points)} / {total_points} points "
+          f"({100*fraction:.1f}%)")
+    
+    return sampled_points, total_points
+
+
+def stratified_sample_for_ui(
+    points_rdd,
+    bounds: Tuple[float, float, float, float],
+    grid_size: int = 50,
+    points_per_cell: int = 10
+) -> Tuple[List[Point], int]:
+    """
+    Stratified sampling: divide space into grid, sample from each cell.
+    Ensures good spatial distribution across the canvas.
+    
+    Args:
+        points_rdd: Full RDD of points
+        bounds: (min_x, min_y, max_x, max_y)
+        grid_size: Number of grid cells per dimension
+        points_per_cell: Max points to sample per cell
+    
+    Returns:
+        Tuple of (sampled_points_list, total_count)
+    """
+    min_x, min_y, max_x, max_y = bounds
+    cell_width = (max_x - min_x) / grid_size
+    cell_height = (max_y - min_y) / grid_size
+    
+    total_points = points_rdd.count()
+    
+    def assign_cell(point):
+        x, y = point
+        cell_x = min(int((x - min_x) / cell_width), grid_size - 1)
+        cell_y = min(int((y - min_y) / cell_height), grid_size - 1)
+        return ((cell_x, cell_y), point)
+    
+    # Group by cell and sample from each
+    sampled = points_rdd \
+        .map(assign_cell) \
+        .groupByKey() \
+        .flatMap(lambda cell_points: list(cell_points[1])[:points_per_cell]) \
+        .collect()
+    
+    print(f"UI Stratified Sampling: {len(sampled)} / {total_points} points "
+          f"(grid: {grid_size}x{grid_size}, {points_per_cell} per cell)")
+    
+    return sampled, total_points
 
 
 # =============================================================================
@@ -212,8 +345,21 @@ class UIClient:
         self.send("STATUS", payload)
 
     def send_init(self, points: List[Point], bounds: Tuple[float, float, float, float], 
-                  n_points: int, n_circles: int, k: int, epsilon: float):
-        self.send("INIT", {
+                  n_points: int, n_circles: int, k: int, epsilon: float,
+                  total_points: Optional[int] = None):
+        """
+        Send initialization data to UI.
+        
+        Args:
+            points: Points to display (may be sampled)
+            bounds: Bounding box
+            n_points: Number of points being displayed
+            n_circles: Total number of candidate circles
+            k: Max circles to select
+            epsilon: Epsilon parameter
+            total_points: Total points in full dataset (if sampled, otherwise None)
+        """
+        payload = {
             "points": points,
             "config": {
                 "n_points": n_points,
@@ -227,7 +373,18 @@ class UIClient:
                 "maxX": bounds[2],
                 "maxY": bounds[3]
             }
-        })
+        }
+        
+        # Add sampling metadata if points were sampled
+        if total_points and total_points > len(points):
+            payload["sampling"] = {
+                "is_sampled": True,
+                "displayed": len(points),
+                "total": total_points,
+                "percentage": round(100 * len(points) / total_points, 1)
+            }
+        
+        self.send("INIT", payload)
 
     def send_start_guess(self, j: int, threshold: float):
         self.send("START_GUESS", {"value": j, "threshold": threshold})
@@ -441,12 +598,33 @@ def main():
     parser = argparse.ArgumentParser(description="Circle Cover Problem - Greedy Thresholding")
     parser.add_argument("--cluster", action="store_true", help="Run on Pi cluster instead of local")
     parser.add_argument("--ui-url", type=str, help="URL of the visualization server (e.g., http://localhost:8000)")
+    parser.add_argument("--size", type=str, default="small", choices=["small", "medium", "large"],
+                        help="Dataset size: small (2K), medium (25K), or large (100K)")
     args = parser.parse_args()
 
-    # Configuration (smaller values for cluster testing)
-    N_POINTS = 2000
-    N_CIRCLES = 500
-    N_CLUSTERS = 8
+    # Configuration based on job size
+    SIZE_CONFIGS = {
+        "small": {
+            "N_POINTS": 2000,
+            "N_CIRCLES": 500,
+            "N_CLUSTERS": 8
+        },
+        "medium": {
+            "N_POINTS": 25000,
+            "N_CIRCLES": 2000,
+            "N_CLUSTERS": 20
+        },
+        "large": {
+            "N_POINTS": 100000,
+            "N_CIRCLES": 5000,
+            "N_CLUSTERS": 50
+        }
+    }
+    
+    config = SIZE_CONFIGS[args.size]
+    N_POINTS = config["N_POINTS"]
+    N_CIRCLES = config["N_CIRCLES"]
+    N_CLUSTERS = config["N_CLUSTERS"]
     K = 10  # Max circles to select
     EPSILON = 0.2
     BOUNDS = (0, 0, 1000, 1000)
@@ -457,6 +635,7 @@ def main():
     print("Circle Cover Problem - Greedy Thresholding Algorithm")
     print("=" * 60)
     print(f"Mode: {'CLUSTER' if args.cluster else 'LOCAL'}")
+    print(f"Dataset Size: {args.size.upper()}")
     print(f"Points: {N_POINTS} (in {N_CLUSTERS} clusters)")
     print(f"Circles: {N_CIRCLES} (radius {RADIUS_RANGE[0]}-{RADIUS_RANGE[1]})")
     print(f"k = {K}, epsilon = {EPSILON}")
@@ -472,6 +651,12 @@ def main():
     print("\nInitializing PySpark...")
     spark = create_spark_session(cluster_mode=args.cluster)
     spark.sparkContext.setLogLevel("WARN")
+    sc = spark.sparkContext
+    
+    # Set checkpoint directory for lineage breaking
+    checkpoint_dir = "./checkpoints"
+    sc.setCheckpointDir(checkpoint_dir)
+    print(f"Checkpoint directory: {checkpoint_dir}")
 
     # Generate data
     print("\nGenerating data...")
@@ -480,8 +665,48 @@ def main():
 
     print(f"Generated {len(points)} points and {len(circles)} circles")
     
+    # Create RDD for distributed processing
+    print("\nSetting up distributed processing...")
+    points_rdd = sc.parallelize(points)
+    
+    # Calculate and apply optimal partitioning
+    # Use fewer partitions in local mode to reduce overhead
+    import multiprocessing
+    num_cores = multiprocessing.cpu_count()
+    optimal_partitions = calculate_partitions(
+        len(points), 
+        cores=16 if args.cluster else num_cores,
+        local_mode=not args.cluster
+    )
+    points_rdd = points_rdd.repartition(optimal_partitions)
+    points_rdd.cache()  # Cache for reuse across iterations
+    
+    print(f"Using {optimal_partitions} partitions for optimal performance")
+    
+    # Sample points for UI visualization (if UI enabled)
     if ui_client:
-        ui_client.send_init(points, BOUNDS, len(points), len(circles), K, EPSILON)
+        # Choose sampling strategy based on dataset size
+        if len(points) <= 5000:
+            # Small dataset - send all points
+            display_points = points
+            total_points = None
+            print("UI: Displaying all points")
+        elif len(points) <= 50000:
+            # Medium dataset - uniform sampling
+            display_points, total_points = sample_points_for_ui(
+                points_rdd, max_display=5000
+            )
+        else:
+            # Large dataset - stratified sampling for better distribution
+            display_points, total_points = stratified_sample_for_ui(
+                points_rdd, BOUNDS, grid_size=50, points_per_cell=10
+            )
+        
+        ui_client.send_init(
+            display_points, BOUNDS, 
+            len(display_points), len(circles), K, EPSILON,
+            total_points=total_points
+        )
 
     # Run algorithm
     print("\nRunning greedy thresholding with logarithmic guesses...")
@@ -499,6 +724,7 @@ def main():
     print(f"  Points covered: {coverage} / {len(points)} ({100*coverage/len(points):.1f}%)")
 
     # Clean up
+    points_rdd.unpersist()
     spark.stop()
     print("\nDone!")
 

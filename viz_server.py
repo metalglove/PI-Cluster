@@ -86,27 +86,57 @@ async def update_event(request: Request):
     return {"status": "ok"}
 
 @app.post("/run")
-async def run_algorithm():
+async def run_algorithm(request: Request):
     """Trigger the Spark job"""
     try:
-        # Command to run the spark job
-        # We use full paths for reliability on the Pi
-        cmd = [
-            "/home/pi/spark-env/bin/python", 
-            "/home/pi/main.py", 
-            "--cluster", 
-            "--ui-url", "http://127.0.0.1:8000"
-        ]
+        # Get job size from request body
+        try:
+            body = await request.json()
+            job_size = body.get('size', 'small')  # Default to small
+        except:
+            job_size = 'small'
+        
+        # Detect environment and build appropriate command
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        main_py_path = os.path.join(script_dir, "main.py")
+        
+        # Detect if we're on Pi cluster or local Windows/Mac
+        is_pi_cluster = os.path.exists("/home/pi/spark-env/bin/python")
+        
+        if is_pi_cluster:
+            # Pi cluster: use virtual env python and cluster mode
+            cmd = [
+                "/home/pi/spark-env/bin/python", 
+                main_py_path, 
+                "--cluster", 
+                "--ui-url", "http://127.0.0.1:8000",
+                "--size", job_size
+            ]
+            logger.info(f"Running on Pi cluster (cluster mode) with {job_size} dataset")
+        else:
+            # Local machine: use current python and local mode
+            import sys
+            cmd = [
+                sys.executable,  # Current Python interpreter
+                main_py_path,
+                # No --cluster flag (runs in local mode)
+                "--ui-url", "http://127.0.0.1:8000",
+                "--size", job_size
+            ]
+            logger.info(f"Running on local machine (local mode) with {job_size} dataset")
+        
+        logger.info(f"Command: {' '.join(cmd)}")
         
         # Run as subprocess
         process = subprocess.Popen(
             cmd, 
             stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
+            cwd=script_dir  # Set working directory to script location
         )
-        logger.info("Started Spark job via UI request")
+        logger.info(f"Started Spark job via UI request (PID: {process.pid})")
         
-        return {"status": "started", "pid": process.pid}
+        return {"status": "started", "pid": process.pid, "size": job_size}
     except Exception as e:
         logger.error(f"Failed to start job: {e}")
         return {"status": "error", "message": str(e)}
