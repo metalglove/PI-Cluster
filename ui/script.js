@@ -30,6 +30,15 @@ function resizeCanvas() {
     canvas.height = canvas.parentElement.clientHeight;
     // No redraw needed here per se as animation loop handles it
 }
+
+// Collapsible sections toggle
+function toggleSection(sectionId) {
+    const section = document.getElementById(sectionId);
+    if (section) {
+        section.classList.toggle('collapsed');
+    }
+}
+
 window.addEventListener('resize', resizeCanvas);
 
 // --- Animation Loop ---
@@ -58,11 +67,13 @@ function render() {
     });
 
     // 1. Draw Points (Starfield effect)
+    // Adjust point size based on canvas width (smaller on mobile)
+    const pointSize = canvas.width < 600 ? 1 : 1.5;
     ctx.fillStyle = COLORS.point;
     for (let p of points) {
         const pos = toScreen(p[0], p[1]);
         ctx.beginPath();
-        ctx.arc(pos.x, pos.y, 1.5, 0, Math.PI * 2);
+        ctx.arc(pos.x, pos.y, pointSize, 0, Math.PI * 2);
         ctx.fill();
     }
 
@@ -77,11 +88,12 @@ function render() {
         const pos = toScreen(c.cx, c.cy);
         const rScreen = c.animR * scale;
 
-        // Glow style
-        ctx.shadowBlur = 15;
+        // Responsive glow and stroke (reduce on mobile)
+        const isMobile = canvas.width < 600;
+        ctx.shadowBlur = isMobile ? 8 : 15;
         ctx.shadowColor = COLORS.primary;
         ctx.strokeStyle = COLORS.primary;
-        ctx.lineWidth = 2;
+        ctx.lineWidth = isMobile ? 1 : 2;
         ctx.fillStyle = 'rgba(0, 242, 255, 0.1)';
 
         ctx.beginPath();
@@ -89,11 +101,11 @@ function render() {
         ctx.fill();
         ctx.stroke();
 
-        // Center point
+        // Center point (smaller on mobile)
         ctx.shadowBlur = 0;
         ctx.fillStyle = '#fff';
         ctx.beginPath();
-        ctx.arc(pos.x, pos.y, 3, 0, Math.PI * 2);
+        ctx.arc(pos.x, pos.y, isMobile ? 2 : 3, 0, Math.PI * 2);
         ctx.fill();
     });
 

@@ -28,6 +28,7 @@
 
     <!-- Styles -->
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/mobile.css">
 </head>
 
 <body>
@@ -103,20 +104,33 @@
                     </div>
                 </div>
 
-                <div class="pseudocode">
-                    <div class="code-line" id="line-1">1. Find max single coverage f(e) (Oracle)</div>
-                    <div class="code-line" id="line-2">2. Calculate total guesses y</div>
-                    <div class="code-line" id="line-3">3. For j = 0 to y:</div>
-                    <div class="code-line" id="line-4">&nbsp;&nbsp;4. Set Threshold τ = ((1+ε)^j * f(e)) / 2k</div>
-                    <div class="code-line" id="line-5">&nbsp;&nbsp;5. Initialize S = {}</div>
-                    <div class="code-line" id="line-6">&nbsp;&nbsp;6. While |S| < k:</div>
-                            <div class="code-line" id="line-7">&nbsp;&nbsp;&nbsp;&nbsp;7. Find ANY circle c with Gain(c)
-                                >= τ</div>
-                            <div class="code-line" id="line-8">&nbsp;&nbsp;&nbsp;&nbsp;8. If found: S.add(c)</div>
-                            <div class="code-line" id="line-9">&nbsp;&nbsp;&nbsp;&nbsp;9. Else: Break internal loop
+                <div class="collapsible-section" id="pseudocode-section">
+                    <div class="collapsible-header" onclick="toggleSection('pseudocode-section')">
+                        <span style="font-size: 14px; color: var(--text-muted); text-transform: uppercase;">Algorithm
+                            Steps</span>
+                        <span class="toggle-icon">▼</span>
+                    </div>
+                    <div class="collapsible-content">
+                        <div class="pseudocode">
+                            <div class="code-line" id="line-1">1. Find max single coverage f(e) (Oracle)</div>
+                            <div class="code-line" id="line-2">2. Calculate total guesses y</div>
+                            <div class="code-line" id="line-3">3. For j = 0 to y:</div>
+                            <div class="code-line" id="line-4">&nbsp;&nbsp;4. Set Threshold τ = ((1+ε)^j * f(e)) / 2k
                             </div>
-                            <div class="code-line" id="line-10">&nbsp;&nbsp;10. If f(S) > Best: Best = S</div>
-                            <div class="code-line" id="line-11">11. Report Best Solution</div>
+                            <div class="code-line" id="line-5">&nbsp;&nbsp;5. Initialize S = {}</div>
+                            <div class="code-line" id="line-6">&nbsp;&nbsp;6. While |S| < k:</div>
+                                    <div class="code-line" id="line-7">&nbsp;&nbsp;&nbsp;&nbsp;7. Find ANY circle c with
+                                        Gain(c)
+                                        >= τ</div>
+                                    <div class="code-line" id="line-8">&nbsp;&nbsp;&nbsp;&nbsp;8. If found: S.add(c)
+                                    </div>
+                                    <div class="code-line" id="line-9">&nbsp;&nbsp;&nbsp;&nbsp;9. Else: Break internal
+                                        loop
+                                    </div>
+                                    <div class="code-line" id="line-10">&nbsp;&nbsp;10. If f(S) > Best: Best = S</div>
+                                    <div class="code-line" id="line-11">11. Report Best Solution</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

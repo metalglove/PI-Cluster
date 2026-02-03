@@ -1,0 +1,375 @@
+/* Mobile-Responsive Styles for Circle Cover Visualization */
+
+/* ============================================================================
+   COLLAPSIBLE SECTIONS (All Devices)
+   ============================================================================ */
+
+.collapsible-section {
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+}
+
+.collapsible-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+    padding: 8px 0;
+}
+
+.collapsible-header:hover {
+    opacity: 0.8;
+}
+
+.toggle-icon {
+    font-size: 18px;
+    transition: transform 0.3s ease;
+    color: var(--primary);
+}
+
+.collapsible-section.collapsed .toggle-icon {
+    transform: rotate(-90deg);
+}
+
+.collapsible-section.collapsed .collapsible-content {
+    display: none;
+}
+
+/* ============================================================================
+   TABLET BREAKPOINT (768px - 1024px)
+   ============================================================================ */
+
+@media (max-width: 1024px) {
+    body {
+        padding: 15px;
+    }
+
+    h1 {
+        font-size: 24px;
+        flex-wrap: wrap;
+        justify-content: center;
+        margin-bottom: 20px;
+    }
+
+    /* Metrics: 2x2 grid */
+    .metrics-box {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+        margin-bottom: 20px;
+    }
+
+    .metric-card {
+        padding: 15px;
+    }
+
+    .metric-value {
+        font-size: 24px;
+    }
+
+    /* Container: Allow wrapping */
+    .container {
+        flex-wrap: wrap;
+        height: auto;
+        min-height: auto;
+    }
+
+    .left-col {
+        width: 100%;
+        flex: 1 1 100%;
+    }
+
+    .right-col {
+        width: 100%;
+        flex: 1 1 100%;
+        min-width: 0;
+    }
+
+    /* Charts: Reduce height */
+    .chart-box {
+        height: 250px;
+    }
+}
+
+/* ============================================================================
+   MOBILE BREAKPOINT (<768px)
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    body {
+        padding: 10px;
+    }
+
+    h1 {
+        font-size: 20px;
+        margin-bottom: 15px;
+        gap: 10px;
+    }
+
+    button#replayBtn {
+        font-size: 12px;
+        padding: 6px 15px;
+    }
+
+    /* Metrics: 2x2 grid with smaller cards */
+    .metrics-box {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+        margin-bottom: 15px;
+    }
+
+    .metric-card {
+        padding: 12px 8px;
+    }
+
+    .metric-value {
+        font-size: 20px;
+    }
+
+    .metric-label {
+        font-size: 10px;
+    }
+
+    /* Container: Full stack */
+    .container {
+        flex-direction: column;
+        gap: 15px;
+    }
+
+    .left-col,
+    .right-col {
+        width: 100%;
+        flex: none;
+        min-width: 0;
+    }
+
+    /* Canvas: Full width, responsive height */
+    .canvas-container {
+        min-height: 300px;
+        height: 50vh;
+        max-height: 400px;
+    }
+
+    /* Status badges: Smaller, repositioned */
+    #status,
+    #algo-status {
+        font-size: 10px;
+        padding: 4px 8px;
+        top: 10px;
+    }
+
+    #status {
+        left: 10px;
+    }
+
+    #algo-status {
+        right: 10px;
+    }
+
+    /* Info box: Compact */
+    .info-box {
+        padding: 15px;
+    }
+
+    .info-box h3 {
+        font-size: 14px;
+    }
+
+    .config-grid {
+        gap: 6px;
+    }
+
+    .config-item {
+        padding: 8px 4px;
+    }
+
+    .config-item .label {
+        font-size: 9px;
+    }
+
+    .config-item .value {
+        font-size: 12px;
+    }
+
+    /* Hide complexity info on mobile */
+    .info-section:has(.info-value) {
+        display: none;
+    }
+
+    /* Pseudocode: Make collapsible, smaller font */
+    .pseudocode {
+        font-size: 11px;
+        padding: 10px;
+        margin-top: 10px;
+    }
+
+    .code-line {
+        padding: 3px 6px;
+    }
+
+    /* Formula: Smaller */
+    .formula-container {
+        padding: 8px;
+        font-size: 14px;
+    }
+
+    /* Charts: Smaller */
+    .chart-box {
+        height: 200px;
+        padding: 12px;
+    }
+
+    /* Control box: Touch-friendly */
+    .control-box {
+        padding: 12px;
+    }
+
+    .control-header h3 {
+        font-size: 14px;
+    }
+
+    .worker-status {
+        font-size: 12px;
+    }
+
+    /* Run button: Larger tap target */
+    .run-btn {
+        padding: 14px;
+        font-size: 13px;
+        min-height: 44px;
+    }
+
+    /* Queue items: Touch-friendly */
+    .queue-item {
+        padding: 10px;
+        font-size: 11px;
+        min-height: 44px;
+    }
+
+    .job-state {
+        font-size: 9px;
+    }
+
+    /* Worker box: Compact */
+    .worker-box {
+        padding: 12px;
+        min-height: 150px;
+        max-height: 300px;
+    }
+
+    .worker-item {
+        padding: 8px;
+        font-size: 11px;
+    }
+
+    .worker-header {
+        font-size: 12px;
+    }
+
+    .worker-stats {
+        gap: 10px;
+        font-size: 10px;
+    }
+}
+
+/* ============================================================================
+   EXTRA SMALL MOBILE (<400px)
+   ============================================================================ */
+
+@media (max-width: 400px) {
+    h1 {
+        font-size: 18px;
+    }
+
+    .metrics-box {
+        gap: 6px;
+    }
+
+    .metric-card {
+        padding: 10px 6px;
+    }
+
+    .metric-value {
+        font-size: 18px;
+    }
+
+    .metric-label {
+        font-size: 9px;
+    }
+
+    .canvas-container {
+        min-height: 250px;
+        height: 40vh;
+    }
+
+    .chart-box {
+        height: 180px;
+    }
+
+    .pseudocode {
+        font-size: 10px;
+    }
+}
+
+/* ============================================================================
+   TOUCH ENHANCEMENTS
+   ============================================================================ */
+
+@media (hover: none) and (pointer: coarse) {
+    /* Touch device specific styles */
+
+    button,
+    .run-btn,
+    .collapsible-header {
+        min-height: 44px;
+        min-width: 44px;
+    }
+
+    /* Increase tap target spacing */
+    .queue-list {
+        gap: 10px;
+    }
+
+    /* Remove hover effects on touch devices */
+    .metric-card:hover,
+    .worker-item:hover {
+        transform: none;
+    }
+
+    /* Larger scrollbar for touch */
+    ::-webkit-scrollbar {
+        width: 12px;
+    }
+
+    ::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.2);
+    }
+}
+
+/* ============================================================================
+   LANDSCAPE MOBILE OPTIMIZATION
+   ============================================================================ */
+
+@media (max-width: 768px) and (orientation: landscape) {
+    .canvas-container {
+        height: 60vh;
+        max-height: none;
+    }
+
+    /* Side-by-side metrics in landscape */
+    .metrics-box {
+        grid-template-columns: repeat(4, 1fr);
+    }
+
+    .metric-card {
+        padding: 8px 6px;
+    }
+
+    .metric-value {
+        font-size: 16px;
+    }
+
+    .metric-label {
+        font-size: 9px;
+    }
+}
