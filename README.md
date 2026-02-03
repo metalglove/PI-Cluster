@@ -11,6 +11,8 @@ This implementation uses:
 - **Submodular maximization** (coverage function is monotone submodular)
 - **PySpark** for parallelizing marginal gain computation
 
+![Visualization Dashboard](docs/visualization_screenshot.png)
+
 ## Quick Start
 
 ### Local Mode (Windows/Linux)
@@ -55,8 +57,8 @@ ssh pi@raspberrypi
 
 | Service | URL |
 |---------|-----|
-| Spark Master UI | http://192.168.1.223:8080 |
-| Spark Application UI | http://192.168.1.223:4040 (when app running) |
+| Spark Master UI | http://raspberrypi:8080 |
+| Spark Application UI | http://raspberrypi:4040 (when app running) |
 
 ### Cluster Management
 
@@ -103,6 +105,27 @@ scp main.py pi@raspberrypi:~/main.py
 ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster"
 ```
 
+### Visualization Dashboard
+
+The project includes a real-time web visualization dashboard.
+
+**Start the Server:**
+```bash
+ssh pi@raspberrypi
+# Start the visualization server (runs on port 8000)
+~/spark-env/bin/python ~/viz_server.py
+```
+
+**Access the UI:**
+Open `http://raspberrypi:8000` in your browser.
+
+**Features:**
+- **Real-time Visualization**: See points and circles as they are covered.
+- **Cluster Control**: Start new internal optimizations directly from the UI.
+- **Live Worker Stats**: Monitor core/memory usage of connected nodes.
+- **Algorithm Metrics**: Track marginal gain and total coverage graphs.
+
+
 ---
 
 ## Configuration
@@ -130,9 +153,14 @@ SPARK_MASTER_URL = "spark://192.168.1.223:7077"
 ```
 PI-Cluster/
 ├── main.py              # Main algorithm implementation
+├── viz_server.py        # Visualization backend (FastAPI)
+├── ui/                  # Frontend assets
+│   ├── index.html       # Dashboard UI
+│   ├── style.css        # Glassmorphism styles
+│   └── script.js        # Visualization logic
 ├── requirements.txt     # Python dependencies
-├── README.md           # This file
-└──CLUSTER_SETUP.md    # Detailed cluster setup guide
+├── README.md            # This file
+└── CLUSTER_SETUP.md     # Detailed cluster setup guide
 ```
 
 ---

@@ -1,0 +1,130 @@
+import asyncio
+import json
+import logging
+import os
+import subprocess
+from typing import List
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("VizServer")
+
+app = FastAPI()
+
+# Mount static files (we'll serve the UI from a 'ui' directory)
+UI_DIR = os.path.join(os.path.dirname(__file__), "ui")
+if not os.path.exists(UI_DIR):
+    os.makedirs(UI_DIR)
+
+app.mount("/static", StaticFiles(directory=UI_DIR), name="static")
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        self.recorded_events: List[dict] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+            
+    def record_event(self, data: dict):
+        if data.get('type') == 'INIT':
+            self.recorded_events = []
+        self.recorded_events.append(data)
+        
+    async def replay(self, websocket: WebSocket):
+        for event in self.recorded_events:
+            await websocket.send_text(json.dumps(event))
+            await asyncio.sleep(0.05) 
+
+manager = ConnectionManager()
+
+@app.get("/")
+async def get():
+    # Serve index.html if it exists, otherwise return a placeholder
+    index_path = os.path.join(UI_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return HTMLResponse(content="<h1>UI not found. Please create ui/index.html</h1>")
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+                if msg.get("action") == "replay":
+                    await manager.replay(websocket)
+            except:
+                pass
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+@app.post("/update")
+async def update_event(request: Request):
+    """endpoint for the Spark driver to push updates"""
+    data = await request.json()
+    logger.info(f"Received update: {data.get('type')}")
+    
+    # Record and Broadcast
+    manager.record_event(data)
+    await manager.broadcast(json.dumps(data))
+    
+    return {"status": "ok"}
+
+@app.post("/run")
+async def run_algorithm():
+    """Trigger the Spark job"""
+    try:
+        # Command to run the spark job
+        # We use full paths for reliability on the Pi
+        cmd = [
+            "/home/pi/spark-env/bin/python", 
+            "/home/pi/main.py", 
+            "--cluster", 
+            "--ui-url", "http://127.0.0.1:8000"
+        ]
+        
+        # Run as subprocess
+        process = subprocess.Popen(
+            cmd, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE
+        )
+        logger.info("Started Spark job via UI request")
+        
+        return {"status": "started", "pid": process.pid}
+    except Exception as e:
+        logger.error(f"Failed to start job: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/cluster-status")
+async def cluster_status():
+    """Proxy to Spark Master JSON API"""
+    try:
+        import urllib.request
+        # Spark Master API
+        url = "http://127.0.0.1:8080/json/"
+        with urllib.request.urlopen(url) as response:
+            data = response.read()
+            return json.loads(data)
+    except Exception as e:
+        logger.error(f"Failed to fetch cluster status: {e}")
+        return {"status": "error", "message": str(e), "workers": []}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

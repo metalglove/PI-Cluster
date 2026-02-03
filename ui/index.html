@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Circle Cover | Greedy (NO OPT)</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap"
+        rel="stylesheet">
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- MathJax -->
+    <script>
+        MathJax = {
+            tex: { inlineMath: [['$', '$'], ['\\(', '\\)']] },
+            svg: { fontCache: 'global' }
+        };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+    <h1>
+        Circle Cover <span style="font-weight:300; opacity:0.7">|</span> Greedy Thresholding (NO OPT assumption)
+        <button id="replayBtn">Replay Last Run</button>
+    </h1>
+
+    <div class="metrics-box">
+        <div class="metric-card glass-panel">
+            <div class="metric-value" id="k-value" style="color: var(--success)">-</div>
+            <div class="metric-label">Circles Selected</div>
+        </div>
+        <div class="metric-card glass-panel">
+            <div class="metric-value" id="coverage-value" style="color: var(--primary)">-</div>
+            <div class="metric-label">Points Covered</div>
+        </div>
+        <div class="metric-card glass-panel">
+            <div class="metric-value">
+                <span id="guess-value" style="color: var(--warning)">-</span> / <span id="total-guesses">-</span>
+            </div>
+            <div class="metric-label">Current Guess (j)</div>
+        </div>
+        <div class="metric-card glass-panel">
+            <div class="metric-value" id="threshold-value" style="color: var(--danger)">-</div>
+            <div class="metric-label">Threshold Value</div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="left-col">
+            <div class="canvas-container glass-panel">
+                <div id="status" style="position: absolute;">Waiting...</div>
+                <div id="algo-status" style="position: absolute;">System Ready</div>
+                <canvas id="vizCanvas"></canvas>
+            </div>
+
+            <div class="info-box glass-panel">
+                <div class="info-section" style="margin-bottom: 20px;">
+                    <!-- Config Grid -->
+                    <div class="config-grid">
+                        <div class="config-item">
+                            <span class="label">Points</span>
+                            <span class="value" id="conf-points">-</span>
+                        </div>
+                        <div class="config-item">
+                            <span class="label">Circles</span>
+                            <span class="value" id="conf-circles">-</span>
+                        </div>
+                        <div class="config-item">
+                            <span class="label">Max K</span>
+                            <span class="value" id="conf-k" style="color:var(--primary)">-</span>
+                        </div>
+                        <div class="config-item">
+                            <span class="label">Epsilon</span>
+                            <span class="value" id="conf-eps">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <h3>Algorithm Status</h3>
+
+                <div class="info-section">
+                    <div class="info-label">Algorithm Complexity</div>
+                    <div class="info-value">O(nk ε⁻¹ log k)</div>
+                </div>
+
+                <div class="info-section">
+                    <div class="info-label">Guesses Formula:</div>
+                    <div class="formula-container">
+                        $$ y = \lceil \frac{\log(k)}{\log(1+\epsilon)} \rceil $$
+                    </div>
+                </div>
+
+                <div class="pseudocode">
+                    <div class="code-line" id="line-1">1. Find max single coverage f(e) (Oracle)</div>
+                    <div class="code-line" id="line-2">2. Calculate total guesses y</div>
+                    <div class="code-line" id="line-3">3. For j = 0 to y:</div>
+                    <div class="code-line" id="line-4">&nbsp;&nbsp;4. Set Threshold τ = ((1+ε)^j * f(e)) / 2k</div>
+                    <div class="code-line" id="line-5">&nbsp;&nbsp;5. Initialize S = {}</div>
+                    <div class="code-line" id="line-6">&nbsp;&nbsp;6. While |S| < k:</div>
+                            <div class="code-line" id="line-7">&nbsp;&nbsp;&nbsp;&nbsp;7. Find ANY circle c with Gain(c)
+                                >= τ</div>
+                            <div class="code-line" id="line-8">&nbsp;&nbsp;&nbsp;&nbsp;8. If found: S.add(c)</div>
+                            <div class="code-line" id="line-9">&nbsp;&nbsp;&nbsp;&nbsp;9. Else: Break internal loop
+                            </div>
+                            <div class="code-line" id="line-10">&nbsp;&nbsp;10. If f(S) > Best: Best = S</div>
+                            <div class="code-line" id="line-11">11. Report Best Solution</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="right-col">
+                <div class="chart-box glass-panel">
+                    <canvas id="gainChart"></canvas>
+                </div>
+                <div class="chart-box glass-panel">
+                    <canvas id="coverageChart"></canvas>
+                </div>
+
+                <div class="control-box glass-panel">
+                    <div class="control-header">
+                        <h3>Cluster Control</h3>
+                        <div class="worker-status">
+                            <div class="status-dot" id="worker-dot"></div>
+                            <span id="worker-text">Workers Idle</span>
+                        </div>
+                    </div>
+                    <button id="runBtn" class="run-btn">Run New Simulation</button>
+
+                    <div class="queue-list" id="job-queue">
+                        <!-- Job items injected here -->
+                    </div>
+                </div>
+
+                <div class="worker-box glass-panel">
+                    <h3
+                        style="margin-top:0; border-bottom:1px solid var(--card-border); padding-bottom:10px; margin-bottom:10px; font-size:14px; color:var(--text-muted); text-transform:uppercase;">
+                        Active Nodes</h3>
+                    <div id="worker-list" class="worker-grid">
+                        <div style="text-align:center; color: var(--text-muted); padding: 10px;">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logic -->
+        <script src="/static/script.js"></script>
+</body>
+
+</html>
