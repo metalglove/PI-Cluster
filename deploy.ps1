@@ -26,11 +26,27 @@ scp ui/script.js pi@raspberrypi:/home/pi/ui/script.js
 Write-Host ""
 Write-Host "✓ Deployment complete!" -ForegroundColor Green
 Write-Host ""
-Write-Host "Restarting viz_server on Pi..." -ForegroundColor Cyan
-ssh pi@raspberrypi "pkill -f viz_server.py; cd /home/pi && source spark-env/bin/activate && nohup python viz_server.py > viz_server.log 2>&1 &"
 
-Start-Sleep -Seconds 2
+Write-Host "Stopping existing server..." -ForegroundColor Yellow
+ssh pi@raspberrypi "pkill -f viz_server.py"
+Start-Sleep -Seconds 1
 
-Write-Host "✓ Server restarted!" -ForegroundColor Green
+Write-Host "Starting new server in background..." -ForegroundColor Yellow
+# Using a specific bash wrapper and disown to ensure process survival
+ssh pi@raspberrypi "cd /home/pi && (nohup /home/pi/spark-env/bin/python viz_server.py > viz_server.log 2>&1 &)"
+
+Write-Host "Waiting for startup..." -ForegroundColor Yellow
+Start-Sleep -Seconds 5
+
+# Verification step
+$check = ssh pi@raspberrypi "netstat -tuln | grep :8000"
+if ($check -match "8000") {
+    Write-Host "✓ Server restarted and listening on port 8000!" -ForegroundColor Green
+}
+else {
+    Write-Host "⚠ WARNING: Server might not have started correctly. Check viz_server.log on Pi." -ForegroundColor Red
+    ssh pi@raspberrypi "tail -n 10 /home/pi/viz_server.log"
+}
+
 Write-Host ""
 Write-Host "Access the UI at: http://raspberrypi:8000" -ForegroundColor Yellow
