@@ -101,8 +101,11 @@ ssh pi@raspberrypi "tail -50 ~/spark/logs/spark-pi-org.apache.spark.deploy.maste
 # Copy script to Pi
 scp main.py pi@raspberrypi:~/main.py
 
-# Run on cluster
+# Run on cluster (without visualization)
 ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster"
+
+# Run with visualization (requires viz_server running)
+ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --ui-url http://127.0.0.1:8000"
 ```
 
 ### Visualization Dashboard
@@ -114,6 +117,12 @@ The project includes a real-time web visualization dashboard.
 ssh pi@raspberrypi
 # Start the visualization server (runs on port 8000)
 ~/spark-env/bin/python ~/viz_server.py
+```
+
+**Run the Algorithm with Visualization:**
+```bash
+# In a separate terminal, run the algorithm with the --ui-url flag
+ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --ui-url http://127.0.0.1:8000"
 ```
 
 **Access the UI:**
