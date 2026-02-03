@@ -265,6 +265,11 @@ function handleMessage(msg) {
                 document.getElementById('conf-k').textContent = msg.config.k;
                 document.getElementById('conf-eps').textContent = msg.config.epsilon;
 
+                // Set total guesses from init if available
+                if (msg.total_guesses) {
+                    document.getElementById('total-guesses').textContent = msg.total_guesses;
+                }
+
                 // Add sampling badge if sampled
                 updateSamplingDisplay();
             }
@@ -463,11 +468,16 @@ document.getElementById('replayBtn').addEventListener('click', () => {
 async function updateClusterStats() {
     try {
         const res = await fetch('/cluster-status');
+        if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
         const data = await res.json();
-        const list = document.getElementById('worker-list');
 
-        // Check App Status & Render Queue
+        const list = document.getElementById('worker-list');
         const queueList = document.getElementById('job-queue');
+
+        if (data.status === 'error') {
+            console.error("Server reported error:", data.message);
+            return;
+        }
         let myAppFound = false;
 
         if (data.activeapps && data.activeapps.length > 0) {
@@ -537,7 +547,12 @@ async function updateClusterStats() {
             return;
         }
 
-        list.innerHTML = data.workers.map(w => `
+        list.innerHTML = data.workers.map(w => {
+            // Determine color based on usage
+            const cpuColor = w.cpu_percent > 80 ? COLORS.danger : (w.cpu_percent > 50 ? COLORS.warning : COLORS.success);
+            const memColor = w.memory_percent > 80 ? COLORS.danger : (w.memory_percent > 50 ? COLORS.warning : COLORS.success);
+
+            return `
             <div class="worker-item">
                 <div class="worker-header">
                     <span>${w.host}</span>
@@ -548,19 +563,36 @@ async function updateClusterStats() {
                 <div class="worker-stats">
                     <div class="stat-group">
                         <span>Cores</span>
-                        <span class="stat-val">${w.cores}</span>
+                        <span class="stat-val">${w.coresused}/${w.cores}</span>
                     </div>
                     <div class="stat-group">
-                        <span>Mem</span>
+                        <span>Memory</span>
                         <span class="stat-val">${(w.memory / 1024).toFixed(1)} GB</span>
                     </div>
-                    <div class="stat-group">
-                        <span>ID</span>
-                        <span class="stat-val" style="font-size:10px">${w.id.split('-').pop()}</span>
+                </div>
+                <div class="resource-bars">
+                    <div class="resource-bar-container">
+                        <div class="resource-bar-label">
+                            <span>CPU</span>
+                            <span class="resource-bar-value">${w.cpu_percent}%</span>
+                        </div>
+                        <div class="resource-bar-track">
+                            <div class="resource-bar-fill" style="width: ${w.cpu_percent}%; background-color: ${cpuColor};"></div>
+                        </div>
+                    </div>
+                    <div class="resource-bar-container">
+                        <div class="resource-bar-label">
+                            <span>MEM</span>
+                            <span class="resource-bar-value">${w.memory_percent}%</span>
+                        </div>
+                        <div class="resource-bar-track">
+                            <div class="resource-bar-fill" style="width: ${w.memory_percent}%; background-color: ${memColor};"></div>
+                        </div>
                     </div>
                 </div>
             </div>
-        `).join('');
+        `;
+        }).join('');
 
     } catch (e) {
         console.error("Cluster stats failed", e);

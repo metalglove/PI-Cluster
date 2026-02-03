@@ -346,7 +346,7 @@ class UIClient:
 
     def send_init(self, points: List[Point], bounds: Tuple[float, float, float, float], 
                   n_points: int, n_circles: int, k: int, epsilon: float,
-                  total_points: Optional[int] = None):
+                  total_points: Optional[int] = None, total_guesses: Optional[int] = None):
         """
         Send initialization data to UI.
         
@@ -372,7 +372,8 @@ class UIClient:
                 "minY": bounds[1],
                 "maxX": bounds[2],
                 "maxY": bounds[3]
-            }
+            },
+            "total_guesses": total_guesses
         }
         
         # Add sampling metadata if points were sampled
@@ -702,10 +703,14 @@ def main():
                 points_rdd, BOUNDS, grid_size=50, points_per_cell=10
             )
         
+        # Calculate total guesses for UI display
+        total_guesses = int(math.ceil(math.log(K) / math.log(1 + EPSILON))) + 1
+        
         ui_client.send_init(
             display_points, BOUNDS, 
             len(display_points), len(circles), K, EPSILON,
-            total_points=total_points
+            total_points=total_points,
+            total_guesses=total_guesses
         )
 
     # Run algorithm

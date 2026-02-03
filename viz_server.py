@@ -35,8 +35,13 @@ class ConnectionManager:
         self.active_connections.remove(websocket)
 
     async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            await connection.send_text(message)
+        # Use a copy to avoid mutation errors if connections close during broadcast
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_text(message)
+            except Exception as e:
+                logger.warning(f"Failed to send message to a client: {e}")
+                # Optional: self.disconnect(connection) if not already handled
             
     def record_event(self, data: dict):
         if data.get('type') == 'INIT':
@@ -143,14 +148,60 @@ async def run_algorithm(request: Request):
 
 @app.get("/cluster-status")
 async def cluster_status():
-    """Proxy to Spark Master JSON API"""
+    """Proxy to Spark Master JSON API with enhanced worker metrics"""
+    import urllib.request
+    import json as json_lib
     try:
-        import urllib.request
         # Spark Master API
-        url = "http://127.0.0.1:8080/json/"
-        with urllib.request.urlopen(url) as response:
+        master_url = "http://127.0.0.1:8080/json/"
+        
+        with urllib.request.urlopen(master_url) as response:
             data = response.read()
-            return json.loads(data)
+            master_data = json_lib.loads(data)
+        
+        # Enhance worker data with resource usage
+        workers = master_data.get("workers", [])
+        enhanced_workers = []
+        
+        for worker in workers:
+            worker_info = {
+                "id": worker.get("id", ""),
+                "host": worker.get("host", ""),
+                "port": worker.get("port", 0),
+                "cores": worker.get("cores", 0),
+                "coresused": worker.get("coresused", 0),
+                "memory": worker.get("memory", 0),
+                "memoryused": worker.get("memoryused", 0),
+                "state": worker.get("state", "UNKNOWN")
+            }
+            
+            # Calculate usage percentages
+            if worker_info["cores"] > 0:
+                worker_info["cpu_percent"] = round((worker_info["coresused"] / worker_info["cores"]) * 100, 1)
+            else:
+                worker_info["cpu_percent"] = 0
+                
+            if worker_info["memory"] > 0:
+                worker_info["memory_percent"] = round((worker_info["memoryused"] / worker_info["memory"]) * 100, 1)
+            else:
+                worker_info["memory_percent"] = 0
+            
+            # Format memory in human-readable format
+            worker_info["memory_mb"] = worker_info["memory"]
+            worker_info["memoryused_mb"] = worker_info["memoryused"]
+            
+            enhanced_workers.append(worker_info)
+        
+        return {
+            "status": master_data.get("status", "UNKNOWN"),
+            "workers": enhanced_workers,
+            "cores": master_data.get("cores", 0),
+            "coresused": master_data.get("coresused", 0),
+            "memory": master_data.get("memory", 0),
+            "memoryused": master_data.get("memoryused", 0),
+            "activeapps": master_data.get("activeapps", []),
+            "completedapps": master_data.get("completedapps", [])
+        }
     except Exception as e:
         logger.error(f"Failed to fetch cluster status: {e}")
         return {"status": "error", "message": str(e), "workers": []}

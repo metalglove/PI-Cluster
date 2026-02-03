@@ -611,6 +611,50 @@ canvas#vizCanvas {
     font-family: var(--font-mono);
 }
 
+/* Resource Usage Bars */
+.resource-bars {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.resource-bar-container {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.resource-bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.resource-bar-value {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    color: var(--text-main);
+}
+
+.resource-bar-track {
+    height: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+}
+
+.resource-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s ease, background-color 0.3s ease;
+    box-shadow: 0 0 8px currentColor;
+}
+
 /* Sampling Badge */
 .sampling-badge {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
