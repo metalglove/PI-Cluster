@@ -26,8 +26,12 @@ source .venv/bin/activate  # Linux
 # Install dependencies
 pip install -r requirements.txt
 
-# Run locally
-python main.py
+# Run locally with small dataset
+python main.py --size small
+
+# Run with visualization server (in separate terminals)
+python viz_server.py  # Terminal 1
+python main.py --ui-url http://localhost:8000 --size medium  # Terminal 2
 ```
 
 ### Cluster Mode (Raspberry Pi)
@@ -37,7 +41,7 @@ python main.py
 ssh pi@raspberrypi
 
 # Run on cluster
-~/spark-env/bin/python ~/main.py --cluster
+~/spark-env/bin/python ~/main.py --cluster --size medium
 ```
 
 ---
@@ -102,15 +106,18 @@ ssh pi@raspberrypi "tail -50 ~/spark/logs/spark-pi-org.apache.spark.deploy.maste
 scp main.py pi@raspberrypi:~/main.py
 
 # Run on cluster (without visualization)
-ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster"
+ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --size medium"
 
 # Run with visualization (requires viz_server running)
-ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --ui-url http://127.0.0.1:8000"
+ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --ui-url http://127.0.0.1:8000 --size large"
+
+# Or run directly from the UI dashboard (recommended)
+# Navigate to http://raspberrypi:8000 and click "Run New Simulation"
 ```
 
 ### Visualization Dashboard
 
-The project includes a real-time web visualization dashboard.
+The project includes a real-time web visualization dashboard with interactive controls.
 
 **Start the Server:**
 ```bash
@@ -122,38 +129,65 @@ ssh pi@raspberrypi
 **Run the Algorithm with Visualization:**
 ```bash
 # In a separate terminal, run the algorithm with the --ui-url flag
-ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --ui-url http://127.0.0.1:8000"
+ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --ui-url http://127.0.0.1:8000 --size medium"
 ```
 
 **Access the UI:**
 Open `http://raspberrypi:8000` in your browser.
 
 **Features:**
-- **Real-time Visualization**: See points and circles as they are covered.
-- **Cluster Control**: Start new internal optimizations directly from the UI.
-- **Live Worker Stats**: Monitor core/memory usage of connected nodes.
-- **Algorithm Metrics**: Track marginal gain and total coverage graphs.
+- **Real-time Visualization**: See points and circles as they are covered during exploration.
+- **Final Solution Highlighting**: Best solution circles rendered in **gold** with enhanced glow, distinguishing them from intermediate guesses (cyan).
+- **Dataset Size Selection**: Choose from small (2K), medium (25K), or large (100K) point datasets.
+- **Smart Sampling**: Automatic stratified/uniform sampling for large datasets to maintain UI performance.
+- **Cluster Control**: Start new simulations directly from the UI with customizable dataset sizes.
+- **Live Worker Stats**: Monitor core/memory usage of connected nodes in real-time.
+- **Algorithm Metrics**: Track marginal gain and total coverage graphs across all guesses.
 
+**What You'll See:**
+
+The visualization progresses through multiple threshold guesses (j=0 to log k):
+1. **Exploration phase** - Cyan circles appear as the algorithm tests different thresholds
+2. **Final result** - Screen clears and the **best solution** is displayed in **gold**
+3. Status shows: `FINAL SOLUTION: X% Coverage` with the winning guess number
 
 ---
 
 ## Configuration
 
-Edit parameters in `main.py`:
+### Dataset Size
 
-```python
-N_POINTS = 500      # Number of points to cover
-N_CIRCLES = 100     # Number of candidate circles
-N_CLUSTERS = 3      # Point clusters for data generation
-K = 5               # Maximum circles to select
-EPSILON = 0.2       # Approximation parameter
+Choose from three predefined configurations via command line:
+
+```bash
+# Small dataset (2K points, 500 circles, 8 clusters)
+python main.py --size small
+
+# Medium dataset (25K points, 2K circles, 20 clusters)
+python main.py --size medium
+
+# Large dataset (100K points, 5K circles, 50 clusters)
+python main.py --size large
 ```
 
-Cluster settings in `create_spark_session()`:
+### Algorithm Parameters
+
+Edit in `main.py` (applies to all sizes):
+
+```python
+K = 10              # Maximum circles to select
+EPSILON = 0.2       # Approximation parameter (affects # of guesses)
+BOUNDS = (0, 0, 1000, 1000)    # Spatial bounds
+RADIUS_RANGE = (30, 100)        # Circle radius range
+```
+
+### Cluster Settings
 
 ```python
 SPARK_MASTER_URL = "spark://192.168.1.223:7077"
 ```
+
+Or use `--cluster` flag to enable cluster mode (auto-detects Pi cluster environment).
 
 ---
 

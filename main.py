@@ -399,6 +399,16 @@ class UIClient:
             "step": step
         })
 
+    def send_final_solution(self, circles: List[Circle], coverage: int, best_j: int, total_points: int):
+        """Send the final best solution to display in UI."""
+        self.send("FINAL_SOLUTION", {
+            "circles": [{"cx": c[0], "cy": c[1], "r": c[2]} for c in circles],
+            "coverage": coverage,
+            "best_guess": best_j,
+            "total_points": total_points,
+            "coverage_percentage": round(100 * coverage / total_points, 1) if total_points > 0 else 0
+        })
+
     def send_finished(self):
         self.send("FINISHED", {})
 
@@ -720,6 +730,8 @@ def main():
     solution, coverage, best_j = greedy_with_guesses(circles, points, K, EPSILON, spark, ui_client)
 
     if ui_client:
+        # Send the final best solution for visualization
+        ui_client.send_final_solution(solution, coverage, best_j, len(points))
         ui_client.send_finished()
 
     print("-" * 60)

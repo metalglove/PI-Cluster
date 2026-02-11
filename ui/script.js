@@ -7,15 +7,17 @@ const COLORS = {
     secondary: '#7000ff',
     success: '#00ff9d',
     danger: '#ff0055',
-    text_muted: '#a0a0b0'
+    text_muted: '#a0a0b0',
+    gold: '#FFD700'  // Gold color for final solution
 };
 
 // --- State ---
 let points = [];
-let circles = []; // Array of {cx, cy, r, animRadius}
+let circles = []; // Array of {cx, cy, r, animRadius, isFinal}
 let bounds = { minX: 0, maxX: 1000, minY: 0, maxY: 1000 };
 let metrics = { k: 0, coverage: 0, j: 0 };
 let isReplaying = false;
+let isFinalSolution = false;  // Track if we're showing the final best solution
 let sampling = {
     isSampled: false,
     displayed: 0,
@@ -94,22 +96,32 @@ function render() {
         const pos = toScreen(c.cx, c.cy);
         const rScreen = c.animR * scale;
 
+        // Use gold color for final solution, primary for intermediate guesses
+        const circleColor = c.isFinal ? COLORS.gold : COLORS.primary;
+        const circleAlpha = c.isFinal ? 0.2 : 0.1;
+
         // Responsive glow and stroke (reduce on mobile)
         const isMobile = canvas.width < 600;
-        ctx.shadowBlur = isMobile ? 8 : 15;
-        ctx.shadowColor = COLORS.primary;
-        ctx.strokeStyle = COLORS.primary;
-        ctx.lineWidth = isMobile ? 1 : 2;
-        ctx.fillStyle = 'rgba(0, 242, 255, 0.1)';
+        ctx.shadowBlur = c.isFinal ? (isMobile ? 12 : 20) : (isMobile ? 8 : 15);
+        ctx.shadowColor = circleColor;
+        ctx.strokeStyle = circleColor;
+        ctx.lineWidth = c.isFinal ? (isMobile ? 2 : 3) : (isMobile ? 1 : 2);
+
+        // Convert hex to rgba
+        const rgb = parseInt(circleColor.slice(1), 16);
+        const r = (rgb >> 16) & 0xff;
+        const g = (rgb >> 8) & 0xff;
+        const b = rgb & 0xff;
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${circleAlpha})`;
 
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, rScreen, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
-        // Center point (smaller on mobile)
+        // Center point (smaller on mobile, gold if final)
         ctx.shadowBlur = 0;
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = c.isFinal ? COLORS.gold : '#fff';
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, isMobile ? 2 : 3, 0, Math.PI * 2);
         ctx.fill();
@@ -234,6 +246,7 @@ function handleMessage(msg) {
             points = msg.points;
             bounds = msg.bounds;
             circles = [];
+            isFinalSolution = false;  // Reset final solution flag
 
             // Handle sampling metadata
             if (msg.sampling && msg.sampling.is_sampled) {
@@ -347,9 +360,39 @@ function handleMessage(msg) {
             highlightLines(['line-6', 'line-7', 'line-8']);
             break;
 
+        case 'FINAL_SOLUTION':
+            // Clear intermediate circles and show only the final best solution
+            circles = msg.circles.map(c => ({
+                ...c,
+                animR: 0,  // Start animation from 0
+                isFinal: true  // Mark as final solution
+            }));
+
+            isFinalSolution = true;
+            metrics.coverage = msg.coverage;
+            metrics.k = circles.length;
+
+            // Update display
+            document.getElementById('k-value').textContent = metrics.k;
+            document.getElementById('coverage-value').textContent =
+                `${msg.coverage} (${msg.coverage_percentage}%)`;
+            document.getElementById('guess-value').textContent = msg.best_guess + 1;
+
+            // Update status with final solution info
+            statusEl.textContent = `FINAL SOLUTION: ${msg.coverage_percentage}% Coverage`;
+            statusEl.style.color = COLORS.gold;
+            statusEl.style.borderColor = COLORS.gold;
+            document.getElementById('algo-status').textContent =
+                `BEST: Guess ${msg.best_guess + 1} | ${metrics.k} circles → ${msg.coverage} pts`;
+
+            highlightLines(['line-10', 'line-11']);
+            break;
+
         case 'FINISHED':
-            statusEl.textContent = 'OPTIMIZATION COMPLETE';
-            statusEl.style.color = COLORS.primary;
+            if (!isFinalSolution) {
+                statusEl.textContent = 'OPTIMIZATION COMPLETE';
+                statusEl.style.color = COLORS.primary;
+            }
             document.getElementById('algo-status').textContent = 'DONE';
             highlightLines(['line-11']);
             setWorkerStatus(false);
