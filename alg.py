@@ -1,5 +1,19 @@
-# Circle Cover Problem - MapReduce Algorithm (arXiv:1810.01489)
-# Algorithm 6 (Dense Inputs): 1/2 - epsilon approximation in 2 rounds
+"""
+Circle Cover Problem - MapReduce Algorithm (arXiv:1810.01489)
+Algorithm 6 (Dense Inputs): 1/2 - epsilon approximation in 2 rounds
+
+SETUP:
+  Install dependencies:
+    pip install pyspark
+
+USAGE (local mode):
+    python alg.py --size small
+
+USAGE (cluster mode):
+    python alg.py --cluster --size medium
+
+SIZE OPTIONS: small (500 circles), medium (2000 circles), large (5000 circles)
+"""
 
 import argparse
 import math
@@ -7,7 +21,7 @@ from operator import add
 import os
 import random
 import sys
-from typing import List, Tuple, Set, Optional
+from typing import List, Tuple
 from pyspark import RDD, Broadcast, SparkContext
 from pyspark.sql import SparkSession
 import multiprocessing
@@ -20,6 +34,8 @@ os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
 Point = Tuple[float, float]           # (x, y)
 Circle = Tuple[float, float, float]   # (cx, cy, radius)
 
+# used when running in cluster mode (raspberry pi) to specify the Spark master URL; otherwise, 
+# ignored when running in local mode (e.g., on a single machine with multiple cores).
 SPARK_MASTER_URL = "spark://192.168.1.223:7077"
 
 # =============================================================================
