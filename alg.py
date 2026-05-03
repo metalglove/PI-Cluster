@@ -3,19 +3,20 @@
 
 import argparse
 import math
+from operator import add
 import os
 import random
 import sys
 from typing import List, Tuple, Set, Optional
+from pyspark import RDD, Broadcast, SparkContext
 from pyspark.sql import SparkSession
-from pyspark.rdd import RDD
 import multiprocessing
 
-# Configure PySpark
+# configure PySpark
 os.environ['PYSPARK_PYTHON'] = sys.executable
 os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
 
-# Type aliases
+# type aliases
 Point = Tuple[float, float]           # (x, y)
 Circle = Tuple[float, float, float]   # (cx, cy, radius)
 
@@ -34,7 +35,6 @@ def create_spark_session(app_name: str = "CircleCoverMR", cluster_mode: bool = F
             .config("spark.executor.cores", "4") \
             .config("spark.cores.max", "8")
     else:
-        import multiprocessing
         num_cores = multiprocessing.cpu_count()
         builder = builder.master(f"local[{num_cores}]") \
             .config("spark.driver.memory", "4g") \
@@ -45,8 +45,9 @@ def create_spark_session(app_name: str = "CircleCoverMR", cluster_mode: bool = F
 # DATA GENERATION
 # =============================================================================
 
-def generate_clustered_points(n_points, n_clusters, bounds, cluster_std=50.0, seed=None):
-    if seed: random.seed(seed)
+def generate_clustered_points(n_points: int, n_clusters: int, bounds: Tuple[float, float, float, float], cluster_std=50.0, seed=None) -> List[Point]:
+    if seed: 
+        random.seed(seed)
     min_x, min_y, max_x, max_y = bounds
     centers = [(random.uniform(min_x, max_x), random.uniform(min_y, max_y)) for _ in range(n_clusters)]
     points = []
@@ -60,8 +61,9 @@ def generate_clustered_points(n_points, n_clusters, bounds, cluster_std=50.0, se
             points.append((x, y))
     return points
 
-def generate_circles(n_circles, bounds, radius_range, seed=None):
-    if seed: random.seed(seed)
+def generate_circles(n_circles: int, bounds: Tuple[float, float, float, float], radius_range: Tuple[float, float], seed=None) -> List[Circle]:
+    if seed: 
+        random.seed(seed)
     min_x, min_y, max_x, max_y = bounds
     min_r, max_r = radius_range
     return [(random.uniform(min_x, max_x), random.uniform(min_y, max_y), random.uniform(min_r, max_r)) for _ in range(n_circles)]
@@ -88,7 +90,7 @@ def compute_coverage(circles: List[Circle], points: List[Point]) -> int:
 def compute_marginal_gain(candidate: Circle, current_set: List[Circle], points: List[Point]) -> int:
     new_covered = 0
     for point in points:
-        # Check if point is already covered
+        # check if point is already covered
         is_covered = False
         for circle in current_set:
             if point_in_circle(point, circle):
@@ -103,53 +105,100 @@ def compute_marginal_gain(candidate: Circle, current_set: List[Circle], points: 
 # =============================================================================
 
 def threshold_greedy_local(candidates: List[Circle], current_solution: List[Circle], k: int, tau: float, points: List[Point]) -> List[Circle]:
+    """
+    Algorithm 1: ThresholdGreedy(S, G, tau)
+    Greedy algorithm with threshold tau for local processing on each machine.
+    """
     G_prime = list(current_solution)
     for circle in candidates:
-        if len(G_prime) >= k: break
+        if len(G_prime) >= k: 
+            break
         if compute_marginal_gain(circle, G_prime, points) >= tau:
             G_prime.append(circle)
     return G_prime
 
 def threshold_filter_local(candidates: List[Circle], current_solution: List[Circle], tau: float, points: List[Point]) -> List[Circle]:
+    """
+    Algorithm 2: ThresholdFilter(S, G, tau)
+    Filter candidates based on marginal gain threshold tau for local processing on each machine.
+    """
     return [c for c in candidates if compute_marginal_gain(c, current_solution, points) >= tau]
+
+# =============================================================================
+# DRIVER HELPERS 
+# =============================================================================
+
+def algorithm_3_partition_and_sample(sc: SparkContext, circles: list[Circle], k: int, seed: int = 42, cluster_mode=False) -> Tuple[RDD[Circle], Broadcast[List[Circle]]]:
+    """
+    Algorithm 3: PartionAndSample(V)
+    1. Sample S subset of V by including each element with probability p = min(1, 4 * sqrt(k / n))
+       where n is the total number of elements and k is the maximum cardinality of the solution.
+    2. Partition V into m = sqrt(k / n) random subsets (machines).
+    3. Send S to all machines (including the central machine).
+    """
+    # let n be the number of elements in V (number of circles).
+    n = len(circles)
+    
+    # let m be the number of machines.
+    m = math.sqrt(k / n)
+    
+    # sampling probability p = min(1, 4 * sqrt(k / n)) as per paper.
+    p = min(1.0, 4.0 * m)
+
+    # NOTE: in an ideal scenario we would have m machines and partition V into m random subsets.
+    # however, in Spark we can just parallelize the data over a number of partitions (e.g., in essence machines/cores)
+    # considering we are running on a raspberrypi cluster with total 8 cores per machine and 2 machines, 
+    # we can use 16 partitions to simulate the distributed environment.
+    # as m is O(sqrt(k/n)), it will be small for large n, so we can just use a fixed number of partitions that is >= m.
+    circles_rdd = sc.parallelize(circles, 16 if cluster_mode else 8) # m
+
+    # we sample each element from V independently with probability p to form S.
+    S = circles_rdd.sample(False, p, seed).collect()
+
+    # then, we broadcast S to all machines (including the central machine).
+    S_bc = sc.broadcast(S)
+    
+    # the expected size of S is p * n_circles, which is O(sqrt(k * n_circles)) as per paper.
+    return circles_rdd, S_bc
+
+def initial_guess_v_S(sc: SparkContext, S_bc: Broadcast[List[Circle]], points_bc: Broadcast[List[Point]]) -> Broadcast[int]:
+    """
+    Initial guess for max value v_S = max_{e in S} f({e}).
+    Note: this is the first guess for the max coverage value, which is used to generate the sequence of thresholds tau_j.
+    As this value is used in the mapper for all guesses on the same set of points, we compute it once and broadcast it.
+    We still use the broadcasted values to stay consistent with the distributed environment, even though this computation is done on the driver.
+    """
+    v_S = 0
+    if S_bc.value:
+        v_S = max([compute_coverage([c], points_bc.value) for c in S_bc.value])
+    return sc.broadcast(v_S)
 
 # =============================================================================
 # ALGORITHM 6 (2-Round MapReduce)
 # =============================================================================
 
-def algorithm_6_dense(spark, circles_rdd, points, k, epsilon, seed=42):
+def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False):
     """
-    Algorithm 6 from arXiv:1810.01489.
+    Algorithm 6: A 1/2 - epsilon approximation for dense inputs in 2 rounds of MapReduce.
+     - Round 1: Parallel Filtering
+     - Round 2: Central Aggregation
+    Note: We assume that the coverage function f is computed via an oracle, 
+          which we implement as compute_coverage and compute_marginal_gain functions.
     """
-    sc = spark.sparkContext
-    n_circles = circles_rdd.count()
-    if n_circles == 0: return [], 0
     
-    # 1. Sample S
-    p = min(1.0, 4.0 * math.sqrt(k / n_circles))
-    S = circles_rdd.sample(False, p, seed).collect()
-    S_bc = sc.broadcast(S)
+    # partition and sample the circles to get S and the RDD for parallel processing.
+    circles_rdd, S_bc = algorithm_3_partition_and_sample(sc, circles, k, seed, cluster_mode)
+    
+    # NOTE: assumption that all points are broadcasted (or accessible via oracle) to all machines as per paper.
     points_bc = sc.broadcast(points)
-    
-    # Init Guesses
-    # Guess max value v. Ideally max_{e in V} f({e}). 
-    # Approximating with max_{e in S} f({e}) or sampling.
-    v_S = 0
-    if S:
-        v_S = max([compute_coverage([c], points) for c in S])
-    
-    if v_S == 0:
-        # Fallback if S is empty or has 0 value (unlikely unless empty input)
-        # return empty or run simple greedy
-        return [], 0
-        
-    print(f"Max value estimate (from Sample): {v_S}")
-    num_guesses = int(math.ceil((1.0 / epsilon) * math.log(k))) + 1
-    print(f"Running {num_guesses} guesses in parallel...")
-    
-    # Broadcast v_S to use as base 'v' for all mappers
-    v_bc = sc.broadcast(v_S)
 
+    # initial guess for max value v_S = max_{e in S} f({e}). 
+    # this is used to generate the sequence of thresholds tau_j for the mappers.
+    v_bc = initial_guess_v_S(sc, S_bc, points_bc)
+        
+    print(f"Max value estimate (from Sample): {v_bc.value}")
+    print(f"Running {int(math.ceil((1.0 / epsilon) * math.log(k)))} guesses in parallel on each machine...")
+    
     # -------------------------------------------------------------------------
     # ROUND 1: Parallel Filtering
     # -------------------------------------------------------------------------
@@ -157,38 +206,27 @@ def algorithm_6_dense(spark, circles_rdd, points, k, epsilon, seed=42):
         local_circles = list(iterator)
         local_res = []
         
-        # Access broadcasts
-        local_S = S_bc.value
-        local_pts = points_bc.value
-        v = v_bc.value
+        # the number of guesses is (1/epsilon) * log(k) as per paper.
+        num_guesses = int(math.ceil((1.0 / epsilon) * math.log(k)))
         
-        # Iterate all guesses
+        # iterate over guesses in parallel on each machine.
         for j in range(1, num_guesses + 1):
-             # tau_j = v * (1 + eps)^(j/k) ?? No, Paper says (1+eps)^j / k ??
-             # Actually let's assume standard geometric geometric sequence
-             # Base guess: OPT/2k. Max OPT ~ k*v. Min OPT ~ v.
-             # So guesses range from v/k to v.
-             # Let's trust the logic: tau_j = v * (1+eps)^j / k
-             tau_j = (v * ((1.0 + epsilon) ** j)) / k
-             
-             # G0 = Greedy(S, empty, tau)
-             G0 = threshold_greedy_local(local_S, [], k, tau_j, local_pts)
-             
-             # Ri = Filter (Vi, G0, tau)
-             if len(G0) < k:
-                 Ri = threshold_filter_local(local_circles, G0, tau_j, local_pts)
-             else:
-                 Ri = []
-                 
-             if Ri:
-                 local_res.append((j, Ri))
+            # compute threshold tau_j = (v * ((1 + epsilon) ** j)) / k as per paper.
+            tau_j = (v_bc.value * ((1.0 + epsilon) ** j)) / k
+            
+            # G0 = Greedy(S, empty, tau)
+            G0 = threshold_greedy_local(S_bc.value, [], k, tau_j, points_bc.value)
+            
+            # Ri = Filter (Vi, G0, tau)
+            if len(G0) < k:
+                Ri = threshold_filter_local(local_circles, G0, tau_j, points_bc.value)
+                if Ri:
+                    local_res.append((j, Ri))
                  
         return local_res
 
-    # Collect Round 1 results: List of (j, [circles])
-    # Group by j to form Union(Ri)
-    from operator import add
-    round1_results = circles_rdd.mapPartitions(mapper_round1) \
+    # we aggregate the result by key (j) to get the union of all Ri for each guess j across all machines (cores / partitions).
+    round1_aggregated_guesses = circles_rdd.mapPartitions(mapper_round1) \
         .reduceByKey(add) \
         .collect()
         
@@ -198,24 +236,27 @@ def algorithm_6_dense(spark, circles_rdd, points, k, epsilon, seed=42):
     best_sol = []
     best_cov = 0
     
-    for j, R_union in round1_results:
-        # Recompute params
-        tau_j = (v_S * ((1.0 + epsilon) ** j)) / k
+    # for each guess j, we use the union of all Ri from round 1 to compute a new solution G and its coverage,
+    # and we keep track of the best solution across all guesses.
+    for j, R_union in round1_aggregated_guesses:
+        # we recompute the threshold tau_j for the central aggregation step, as it is used in the greedy algorithm to compute G0 and G.
+        tau_j = (v_bc.value * ((1.0 + epsilon) ** j)) / k
         
-        # Recompute G0 from S
-        G0 = threshold_greedy_local(S, [], k, tau_j, points)
+        # recompute G0 = Greedy(S, empty, tau) on the central machine, 
+        # as it is used as the starting point for the greedy algorithm to compute G.
+        G0 = threshold_greedy_local(S_bc.value, [], k, tau_j, points_bc.value)
         
-        # G = Greedy(Union Ri, G0, tau)
-        # Note: We continue adding to G0
-        G = threshold_greedy_local(R_union, G0, k, tau_j, points)
+        # compute G = Greedy(R_union, G0, k, tau) on the central machine using the 
+        # union of all Ri from round 1 as candidates and G0 as the starting solution.
+        G = threshold_greedy_local(R_union, G0, k, tau_j, points_bc.value)
         
-        cov = compute_coverage(G, points)
-        # print(f"  Guess j={j}, cov={cov}")
-        
+        # compute coverage of G using the oracle (compute_coverage) and update best solution if needed.
+        cov = compute_coverage(G, points_bc.value)
         if cov > best_cov:
             best_cov = cov
             best_sol = G
-            
+
+    # return the best solution and its coverage.            
     return best_sol, best_cov
 
 # =============================================================================
@@ -226,7 +267,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cluster", action="store_true")
     parser.add_argument("--size", type=str, default="small")
-    parser.add_argument("--ui-url", type=str) # ignored for now
     args = parser.parse_args()
     
     SIZE_CONFIGS = {
@@ -246,11 +286,9 @@ def main():
     points = generate_clustered_points(cfg["N_POINTS"], cfg["N_CLUSTERS"], (0,0,1000,1000), seed=42)
     circles = generate_circles(cfg["N_CIRCLES"], (0,0,1000,1000), (30,100), seed=43)
     
-    circles_rdd = sc.parallelize(circles).repartition(8 if not args.cluster else 16)
-    
     # 3. Algorithm
-    print("Running Algorithm 6 (arXiv:1810.01489)...")
-    sol, cov = algorithm_6_dense(spark, circles_rdd, points, k=10, epsilon=0.2)
+    print("Running Algorithm 6...")
+    sol, cov = algorithm_6_dense(sc, circles, points, k=10, epsilon=0.2, seed=56, cluster_mode=args.cluster)
     
     print("-" * 60)
     print(f"Solution Size: {len(sol)}")
