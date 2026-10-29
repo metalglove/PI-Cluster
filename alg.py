@@ -23,10 +23,14 @@ from operator import add
 import os
 import random
 import sys
-from typing import List, Tuple
+import time
+from typing import List, Optional, Tuple
 from pyspark import RDD, Broadcast, SparkContext
 from pyspark.sql import SparkSession
 import multiprocessing
+
+from viz_client import (UIClient, STATS_KEY, circle_payload, machine_identity, ship_to_workers,
+                        split_partition_stats, with_partition_stats)
 
 # configure PySpark
 os.environ['PYSPARK_PYTHON'] = sys.executable
@@ -143,6 +147,39 @@ def threshold_filter_local(candidates: List[Circle], current_solution: List[Circ
     return [c for c in candidates if compute_marginal_gain(c, current_solution, points) >= tau]
 
 # =============================================================================
+# UI HELPERS (only used when a visualization server is attached)
+# =============================================================================
+
+def gains_in_order(G: List[Circle], points: List[Point]) -> List[int]:
+    """Marginal gain of each circle in G when added in order (for the UI's gain chart)."""
+    covered = [False] * len(points)
+    gains = []
+    for circle in G:
+        gain = 0
+        for i, point in enumerate(points):
+            if not covered[i] and point_in_circle(point, circle):
+                covered[i] = True
+                gain += 1
+        gains.append(gain)
+    return gains
+
+def solution_payload(G: List[Circle], from_sample: int, origin: dict) -> List[dict]:
+    """G's circles for the UI: the first from_sample came from the sample S, the rest from round 1."""
+    payload = []
+    for i, c in enumerate(G):
+        if i < from_sample:
+            payload.append(circle_payload(c, source="sample"))
+        else:
+            host, ip = origin.get(c, (None, None))
+            payload.append(circle_payload(c, source="round1", host=host, ip=ip))
+    return payload
+
+def central_stats(candidates: int) -> dict:
+    """Round 2 runs on the driver: describe it like a single partition for the UI."""
+    host, ip = machine_identity()
+    return {"partition": "central", "host": host, "ip": ip, "held": candidates, "sent": 0}
+
+# =============================================================================
 # DRIVER HELPERS 
 # =============================================================================
 
@@ -195,7 +232,7 @@ def initial_guess_v_S(sc: SparkContext, S_bc: Broadcast[List[Circle]], points_bc
 # ALGORITHM 6 (2-Round MapReduce)
 # =============================================================================
 
-def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False):
+def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False, ui: Optional[UIClient] = None):
     """
     Algorithm 6: A 1/2 - epsilon approximation for dense inputs in 2 rounds of MapReduce.
      - Round 1: Parallel Filtering
@@ -215,6 +252,10 @@ def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Poin
     v_bc = initial_guess_v_S(sc, S_bc, points_bc)
         
     print(f"Max value estimate (from Sample): {v_bc.value}")
+
+    if ui:
+        ui.send("SAMPLE", {"algo": "alg6", "circles": [circle_payload(c) for c in S_bc.value],
+                           "n": len(circles), "v": v_bc.value})
     print(f"Running {int(math.ceil((1.0 / epsilon) * math.log(k)))} guesses in parallel on each machine...")
     
     # -------------------------------------------------------------------------
@@ -245,10 +286,21 @@ def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Poin
 
     # we aggregate the result by key (j) to get the union of all Ri for each guess j across all machines (cores / partitions).
     # guesses for which no machine sent any Ri (e.g., |G0| = k) are missing here and get an empty union in round 2.
-    round1_aggregated_guesses = dict(circles_rdd.mapPartitions(mapper_round1) \
+    # with a UI attached, each partition also reports its machine and how much it sent (under STATS_KEY).
+    if ui:
+        round1 = circles_rdd.mapPartitionsWithIndex(with_partition_stats(mapper_round1, lambda item: item[1]))
+    else:
+        round1 = circles_rdd.mapPartitions(mapper_round1)
+    round1_aggregated_guesses = dict(round1 \
         .reduceByKey(add) \
         .collect())
+    round1_stats = round1_aggregated_guesses.pop(STATS_KEY, [])
     num_guesses = int(math.ceil((1.0 / epsilon) * math.log(k)))
+
+    origin = {}
+    if ui:
+        origin = ui.send_partition_round("alg6_r1", round1_stats, algo="alg6", round=1, guesses=num_guesses)
+        ui.send_round("alg6_r2", [central_stats(len(origin))], algo="alg6", round=2, central=True)
         
     # -------------------------------------------------------------------------
     # ROUND 2: Central Aggregation
@@ -279,6 +331,11 @@ def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Poin
             best_cov = cov
             best_sol = G
 
+        if ui:
+            ui.send("GUESS_RESULT", {"algo": "alg6", "j": j, "threshold": tau_j, "candidates": len(R_union),
+                                     "g0": len(G0), "circles": solution_payload(G, len(G0), origin),
+                                     "gains": gains_in_order(G, points_bc.value), "coverage": cov})
+
     # return the best solution and its coverage.            
     return best_sol, best_cov
 
@@ -286,7 +343,7 @@ def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Poin
 # ALGORITHM 7 (2-Round MapReduce, Sparse Inputs)
 # =============================================================================
 
-def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False, top_factor: int = 2):
+def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False, top_factor: int = 2, ui: Optional[UIClient] = None):
     """
     Algorithm 7: A 1/2 - epsilon approximation for sparse inputs in 2 rounds of MapReduce.
      - Round 1: each machine sends its O(k) largest elements to the central machine
@@ -314,7 +371,13 @@ def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Poi
         valued.sort(key=lambda x: x[0], reverse=True)
         return valued[:top_count]
 
-    round1_elements = circles_rdd.mapPartitions(mapper_round1).collect()
+    # with a UI attached, each partition also reports its machine and how much it sent.
+    if ui:
+        round1_output = circles_rdd.mapPartitionsWithIndex(
+            with_partition_stats(mapper_round1, lambda item: [item[1]])).collect()
+        round1_elements, round1_stats = split_partition_stats(round1_output)
+    else:
+        round1_elements = circles_rdd.mapPartitions(mapper_round1).collect()
 
     # -------------------------------------------------------------------------
     # ROUND 2: Central Thresholding
@@ -329,11 +392,16 @@ def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Poi
     print(f"Elements sent to central machine: {len(S)}")
     print(f"Max value estimate (from largest elements): {v}")
 
-    best_sol = []
-    best_cov = 0
-
     # the number of guesses is (1/epsilon) * log(k) as per paper.
     num_guesses = int(math.ceil((1.0 / epsilon) * math.log(k)))
+
+    origin = {}
+    if ui:
+        origin = ui.send_partition_round("alg7_r1", round1_stats, algo="alg7", round=1, top=top_count, v=v)
+        ui.send_round("alg7_r2", [central_stats(len(S))], algo="alg7", round=2, central=True)
+
+    best_sol = []
+    best_cov = 0
 
     for j in range(1, num_guesses + 1):
         # compute threshold tau_j = (v * ((1 + epsilon) ** j)) / k as per paper.
@@ -348,6 +416,11 @@ def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Poi
             best_cov = cov
             best_sol = G
 
+        if ui:
+            ui.send("GUESS_RESULT", {"algo": "alg7", "j": j, "threshold": tau_j, "candidates": len(S),
+                                     "g0": 0, "circles": solution_payload(G, 0, origin),
+                                     "gains": gains_in_order(G, points_bc.value), "coverage": cov})
+
     # return the best solution and its coverage.
     return best_sol, best_cov
 
@@ -355,24 +428,28 @@ def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Poi
 # THEOREM 8 (Algorithms 6 and 7 in parallel)
 # =============================================================================
 
-def theorem_8_combined(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False):
+def theorem_8_combined(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False, ui: Optional[UIClient] = None):
     """
     Theorem 8: By running Algorithms 6 and 7 in parallel, we have a 2-round 1/2 - epsilon approximation.
     We do not know whether the input is dense or sparse, so we run both and return the better of the two solutions.
     Note: in the paper each machine runs both algorithms in the same 2 rounds; here they run as separate Spark jobs.
     """
+    started = time.time()
     print("Running Algorithm 6 (dense)...")
-    sol_6, cov_6 = algorithm_6_dense(sc, circles, points, k, epsilon, seed, cluster_mode)
+    sol_6, cov_6 = algorithm_6_dense(sc, circles, points, k, epsilon, seed, cluster_mode, ui=ui)
     print(f"Algorithm 6 coverage: {cov_6}")
 
     print("Running Algorithm 7 (sparse)...")
-    sol_7, cov_7 = algorithm_7_sparse(sc, circles, points, k, epsilon, seed, cluster_mode)
+    sol_7, cov_7 = algorithm_7_sparse(sc, circles, points, k, epsilon, seed, cluster_mode, ui=ui)
     print(f"Algorithm 7 coverage: {cov_7}")
 
     # return the better of the two solutions.
-    if cov_7 > cov_6:
-        return sol_7, cov_7
-    return sol_6, cov_6
+    winner, sol, cov = ("alg7", sol_7, cov_7) if cov_7 > cov_6 else ("alg6", sol_6, cov_6)
+    if ui:
+        ui.send_final_solution(sol, cov, None, len(points), algorithm=winner,
+                               coverages={"alg6": cov_6, "alg7": cov_7},
+                               elapsed_s=round(time.time() - started, 1))
+    return sol, cov
 
 # =============================================================================
 # MAIN
@@ -382,7 +459,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cluster", action="store_true")
     parser.add_argument("--size", type=str, default="small")
+    parser.add_argument("--ui-url", type=str, help="URL of the visualization server (e.g., http://localhost:8000)")
     args = parser.parse_args()
+    ui = UIClient(args.ui_url) if args.ui_url else None
     
     SIZE_CONFIGS = {
         "small": {"N_POINTS": 2000, "N_CIRCLES": 500, "N_CLUSTERS": 8},
@@ -395,14 +474,26 @@ def main():
     spark = create_spark_session(cluster_mode=args.cluster)
     sc = spark.sparkContext
     sc.setLogLevel("WARN")
+    if ui:
+        ship_to_workers(sc)  # round-1 tasks report which Pi ran them via viz_client
     
     # 2. Data
     print("Generating data...")
     points = generate_clustered_points(cfg["N_POINTS"], cfg["N_CLUSTERS"], (0,0,1000,1000), seed=42)
     circles = generate_circles(cfg["N_CIRCLES"], (0,0,1000,1000), (30,100), seed=43)
     
+    if ui:
+        # the browser draws at most 5000 points; send a uniform sample of larger inputs.
+        shown = points if len(points) <= 5000 else random.Random(0).sample(points, 5000)
+        ui.send_init(shown, (0, 0, 1000, 1000), len(shown), len(circles), 10, 0.2,
+                     total_points=len(points), total_guesses=int(math.ceil((1.0 / 0.2) * math.log(10))),
+                     algorithm="theorem8")
+
     # 3. Algorithm
-    sol, cov = theorem_8_combined(sc, circles, points, k=10, epsilon=0.2, seed=56, cluster_mode=args.cluster)
+    sol, cov = theorem_8_combined(sc, circles, points, k=10, epsilon=0.2, seed=56, cluster_mode=args.cluster, ui=ui)
+
+    if ui:
+        ui.send_finished()
     
     print("-" * 60)
     print(f"Solution Size: {len(sol)}")

@@ -6,8 +6,11 @@ import math
 import os
 import random
 import sys
+import time
 from typing import List, Tuple, Set, Optional
 from pyspark.sql import SparkSession
+
+from viz_client import UIClient, machine_identity, ship_to_workers
 
 # Configure PySpark to use the same Python as the script
 os.environ['PYSPARK_PYTHON'] = sys.executable
@@ -310,119 +313,6 @@ def compute_marginal_gain(
 
 
 # =============================================================================
-# UI CLIENT
-# =============================================================================
-
-class UIClient:
-    def __init__(self, base_url: str):
-        self.base_url = base_url.rstrip('/')
-        self.endpoint = f"{self.base_url}/update"
-        print(f"UI Client initialized. sending updates to {self.endpoint}")
-
-    def send(self, event_type: str, payload: dict):
-        try:
-            import urllib.request
-            import json
-            
-            data = payload.copy()
-            data['type'] = event_type
-            
-            json_data = json.dumps(data).encode('utf-8')
-            req = urllib.request.Request(
-                self.endpoint,
-                data=json_data,
-                headers={'Content-Type': 'application/json'}
-            )
-            with urllib.request.urlopen(req) as response:
-                pass
-        except Exception as e:
-            print(f"Failed to send UI update: {e}")
-
-    def send_status(self, message: str, total_guesses: Optional[int] = None):
-        payload = {"message": message}
-        if total_guesses is not None:
-            payload["total_guesses"] = total_guesses
-        self.send("STATUS", payload)
-
-    def send_init(self, points: List[Point], bounds: Tuple[float, float, float, float], 
-                  n_points: int, n_circles: int, k: int, epsilon: float,
-                  total_points: Optional[int] = None, total_guesses: Optional[int] = None):
-        """
-        Send initialization data to UI.
-        
-        Args:
-            points: Points to display (may be sampled)
-            bounds: Bounding box
-            n_points: Number of points being displayed
-            n_circles: Total number of candidate circles
-            k: Max circles to select
-            epsilon: Epsilon parameter
-            total_points: Total points in full dataset (if sampled, otherwise None)
-        """
-        payload = {
-            "points": points,
-            "config": {
-                "n_points": n_points,
-                "n_circles": n_circles,
-                "k": k,
-                "epsilon": epsilon
-            },
-            "bounds": {
-                "minX": bounds[0],
-                "minY": bounds[1],
-                "maxX": bounds[2],
-                "maxY": bounds[3]
-            },
-            "total_guesses": total_guesses
-        }
-        
-        # Add sampling metadata if points were sampled
-        if total_points and total_points > len(points):
-            payload["sampling"] = {
-                "is_sampled": True,
-                "displayed": len(points),
-                "total": total_points,
-                "percentage": round(100 * len(points) / total_points, 1)
-            }
-        
-        self.send("INIT", payload)
-
-    def send_start_guess(self, j: int, threshold: float):
-        self.send("START_GUESS", {"value": j, "threshold": threshold})
-
-    def send_round(self, kind: str, partitions: List[dict], **details):
-        """One Spark job finished: report what every partition (and its Pi) did."""
-        payload = {"kind": kind, "partitions": partitions}
-        payload.update(details)
-        self.send("ROUND", payload)
-
-    def send_circle_added(self, circle: Circle, gain: int, threshold: float, coverage: int, step: int,
-                          partition: Optional[int] = None, host: Optional[str] = None):
-        self.send("CIRCLE_ADDED", {
-            "circle": {"cx": circle[0], "cy": circle[1], "r": circle[2]},
-            "gain": gain,
-            "threshold": threshold,
-            "coverage": coverage,
-            "step": step,
-            "partition": partition,
-            "host": host
-        })
-
-    def send_final_solution(self, circles: List[Circle], coverage: int, best_j: int, total_points: int):
-        """Send the final best solution to display in UI."""
-        self.send("FINAL_SOLUTION", {
-            "circles": [{"cx": c[0], "cy": c[1], "r": c[2]} for c in circles],
-            "coverage": coverage,
-            "best_guess": best_j,
-            "total_points": total_points,
-            "coverage_percentage": round(100 * coverage / total_points, 1) if total_points > 0 else 0
-        })
-
-    def send_finished(self):
-        self.send("FINISHED", {})
-
-
-# =============================================================================
 # GREEDY THRESHOLDING ALGORITHM
 # =============================================================================
 
@@ -442,20 +332,9 @@ def evaluate_on_cluster(
                work it did, so the UI can show the work being split across the Pis.
     """
     def run_partition(pid, iterator):
-        import socket
         import time
         start = time.time()
-        host = socket.gethostname()
-        ip = None
-        try:
-            # The Spark master lists workers by IP; find ours so the UI can match them up.
-            # (Connecting a UDP socket sends nothing, it only picks the outgoing interface.)
-            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            probe.connect(("10.255.255.255", 1))
-            ip = probe.getsockname()[0]
-            probe.close()
-        except OSError:
-            pass
+        host, ip = machine_identity()
         kept = []
         evaluated = 0
         best = 0
@@ -732,7 +611,8 @@ def main():
     spark = create_spark_session(cluster_mode=args.cluster)
     spark.sparkContext.setLogLevel("WARN")
     sc = spark.sparkContext
-    
+    ship_to_workers(sc)  # tasks report which Pi ran them via viz_client
+
     # Set checkpoint directory for lineage breaking
     checkpoint_dir = "./checkpoints"
     sc.setCheckpointDir(checkpoint_dir)
@@ -796,11 +676,13 @@ def main():
     print("\nRunning greedy thresholding with logarithmic guesses...")
     print("-" * 60)
 
+    started = time.time()
     solution, coverage, best_j = greedy_with_guesses(circles, points, K, EPSILON, spark, ui_client)
+    elapsed = time.time() - started
 
     if ui_client:
         # Send the final best solution for visualization
-        ui_client.send_final_solution(solution, coverage, best_j, len(points))
+        ui_client.send_final_solution(solution, coverage, best_j, len(points), elapsed_s=round(elapsed, 1))
         ui_client.send_finished()
 
     print("-" * 60)
