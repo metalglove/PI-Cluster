@@ -8,6 +8,7 @@ import random
 import sys
 import time
 from typing import List, Tuple, Set, Optional
+import numpy as np
 from pyspark.sql import SparkSession
 
 from viz_client import UIClient, machine_identity, ship_to_workers
@@ -269,6 +270,26 @@ def point_in_circle(point: Point, circle: Circle) -> bool:
     return (px - cx) ** 2 + (py - cy) ** 2 <= r ** 2
 
 
+# The oracle is vectorised with numpy: points are an (n, 2) float array, and a circle test is one
+# array expression instead of a Python loop per point. Same float64 arithmetic, so same answers.
+
+def as_points(points) -> np.ndarray:
+    """Points as an (n, 2) float array (broadcast arrays pass through unchanged)."""
+    return points if isinstance(points, np.ndarray) else np.asarray(points, dtype=float).reshape(-1, 2)
+
+def inside(circle: Circle, pts: np.ndarray) -> np.ndarray:
+    """Boolean mask of the points inside circle."""
+    cx, cy, r = circle
+    return (pts[:, 0] - cx) ** 2 + (pts[:, 1] - cy) ** 2 <= r ** 2
+
+def uncovered_mask(circles: List[Circle], pts: np.ndarray) -> np.ndarray:
+    """Boolean mask of the points not covered by any of circles."""
+    mask = np.ones(len(pts), dtype=bool)
+    for circle in circles:
+        mask &= ~inside(circle, pts)
+    return mask
+
+
 def compute_coverage(circles: List[Circle], points: List[Point]) -> int:
     """
     Compute f(S): the number of unique points covered by a set of circles.
@@ -277,13 +298,8 @@ def compute_coverage(circles: List[Circle], points: List[Point]) -> int:
     if not circles:
         return 0
 
-    covered = 0
-    for point in points:
-        for circle in circles:
-            if point_in_circle(point, circle):
-                covered += 1
-                break  # Point is covered, move to next
-    return covered
+    pts = as_points(points)
+    return int(len(pts) - np.count_nonzero(uncovered_mask(circles, pts)))
 
 
 def compute_marginal_gain(
@@ -295,20 +311,9 @@ def compute_marginal_gain(
     Compute marginal gain: Δf(c|S) = f(S ∪ {c}) - f(S)
     This is the number of NEW points covered by adding candidate to current_set.
     """
-    new_covered = 0
-    for point in points:
-        # Check if point is already covered by current_set
-        already_covered = False
-        for circle in current_set:
-            if point_in_circle(point, circle):
-                already_covered = True
-                break
-
-        # If not already covered, check if candidate covers it
-        if not already_covered and point_in_circle(point, candidate):
-            new_covered += 1
-
-    return new_covered
+    # Points inside the candidate that no circle of current_set covers yet
+    pts = as_points(points)
+    return int(np.count_nonzero(inside(candidate, pts) & uncovered_mask(current_set, pts)))
 
 
 
@@ -377,10 +382,10 @@ def find_max_single_coverage(
     This is parallelized using PySpark.
     """
     sc = spark.sparkContext
-    points_bc = sc.broadcast(points)
+    points_bc = sc.broadcast(np.asarray(points, dtype=float))
 
     def single_coverage(circle):
-        return sum(1 for p in points_bc.value if point_in_circle(p, circle))
+        return int(np.count_nonzero(inside(circle, points_bc.value)))
 
     results, stats = evaluate_on_cluster(sc, list(enumerate(circles)), single_coverage)
 
@@ -410,11 +415,16 @@ def find_candidate_above_threshold(
         return None, 0, None, []
 
     sc = spark.sparkContext
-    points_bc = sc.broadcast(points)
+    points_bc = sc.broadcast(np.asarray(points, dtype=float))
     current_set_bc = sc.broadcast(current_set)
 
+    cache = {}
     def marginal_gain(circle):
-        return compute_marginal_gain(circle, current_set_bc.value, points_bc.value)
+        # The points S does not cover yet, worked out once per task and reused for every candidate
+        if "uncovered" not in cache:
+            pts = points_bc.value
+            cache["uncovered"] = pts[uncovered_mask(current_set_bc.value, pts)]
+        return int(np.count_nonzero(inside(circle, cache["uncovered"])))
 
     # Only consider remaining circles
     candidates = [(i, circles[i]) for i in remaining_indices]

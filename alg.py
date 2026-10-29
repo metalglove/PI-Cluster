@@ -32,6 +32,7 @@ from typing import List, Optional, Tuple
 from pyspark import RDD, Broadcast, SparkContext
 from pyspark.sql import SparkSession
 import multiprocessing
+import numpy as np
 
 from viz_client import (UIClient, STATS_KEY, circle_payload, machine_identity, ship_to_workers,
                         split_partition_stats, with_partition_stats)
@@ -103,28 +104,34 @@ def point_in_circle(point: Point, circle: Circle) -> bool:
     cx, cy, r = circle
     return (px - cx) ** 2 + (py - cy) ** 2 <= r ** 2
 
+# The oracle is vectorised with numpy: points are an (n, 2) float array, and a circle test is one
+# array expression instead of a Python loop per point. Same float64 arithmetic, so same answers.
+
+def as_points(points) -> np.ndarray:
+    """Points as an (n, 2) float array (broadcast arrays pass through unchanged)."""
+    return points if isinstance(points, np.ndarray) else np.asarray(points, dtype=float).reshape(-1, 2)
+
+def inside(circle: Circle, pts: np.ndarray) -> np.ndarray:
+    """Boolean mask of the points inside circle."""
+    cx, cy, r = circle
+    return (pts[:, 0] - cx) ** 2 + (pts[:, 1] - cy) ** 2 <= r ** 2
+
+def uncovered_mask(circles: List[Circle], pts: np.ndarray) -> np.ndarray:
+    """Boolean mask of the points not covered by any of circles."""
+    mask = np.ones(len(pts), dtype=bool)
+    for circle in circles:
+        mask &= ~inside(circle, pts)
+    return mask
+
 def compute_coverage(circles: List[Circle], points: List[Point]) -> int:
     if not circles: return 0
-    covered = 0
-    for point in points:
-        for circle in circles:
-            if point_in_circle(point, circle):
-                covered += 1
-                break
-    return covered
+    pts = as_points(points)
+    return int(len(pts) - np.count_nonzero(uncovered_mask(circles, pts)))
 
 def compute_marginal_gain(candidate: Circle, current_set: List[Circle], points: List[Point]) -> int:
-    new_covered = 0
-    for point in points:
-        # check if point is already covered
-        is_covered = False
-        for circle in current_set:
-            if point_in_circle(point, circle):
-                is_covered = True
-                break
-        if not is_covered and point_in_circle(point, candidate):
-            new_covered += 1
-    return new_covered
+    # points inside the candidate that no circle of the current set covers yet
+    pts = as_points(points)
+    return int(np.count_nonzero(inside(candidate, pts) & uncovered_mask(current_set, pts)))
 
 # =============================================================================
 # LOCAL HELPERS (Algorithms 1 & 2)
@@ -136,11 +143,16 @@ def threshold_greedy_local(candidates: List[Circle], current_solution: List[Circ
     Greedy algorithm with threshold tau for local processing on each machine.
     """
     G_prime = list(current_solution)
+    pts = as_points(points)
+    # keep the uncovered points up to date instead of recomputing them for every candidate
+    uncovered = uncovered_mask(G_prime, pts)
     for circle in candidates:
         if len(G_prime) >= k: 
             break
-        if compute_marginal_gain(circle, G_prime, points) >= tau:
+        new = inside(circle, pts) & uncovered
+        if np.count_nonzero(new) >= tau:
             G_prime.append(circle)
+            uncovered &= ~new
     return G_prime
 
 def threshold_filter_local(candidates: List[Circle], current_solution: List[Circle], tau: float, points: List[Point]) -> List[Circle]:
@@ -148,7 +160,9 @@ def threshold_filter_local(candidates: List[Circle], current_solution: List[Circ
     Algorithm 2: ThresholdFilter(S, G, tau)
     Filter candidates based on marginal gain threshold tau for local processing on each machine.
     """
-    return [c for c in candidates if compute_marginal_gain(c, current_solution, points) >= tau]
+    pts = as_points(points)
+    remaining = pts[uncovered_mask(current_solution, pts)]   # the gain only counts these points
+    return [c for c in candidates if np.count_nonzero(inside(c, remaining)) >= tau]
 
 # =============================================================================
 # UI HELPERS (only used when a visualization server is attached)
@@ -156,15 +170,13 @@ def threshold_filter_local(candidates: List[Circle], current_solution: List[Circ
 
 def gains_in_order(G: List[Circle], points: List[Point]) -> List[int]:
     """Marginal gain of each circle in G when added in order (for the UI's gain chart)."""
-    covered = [False] * len(points)
+    pts = as_points(points)
+    uncovered = np.ones(len(pts), dtype=bool)
     gains = []
     for circle in G:
-        gain = 0
-        for i, point in enumerate(points):
-            if not covered[i] and point_in_circle(point, circle):
-                covered[i] = True
-                gain += 1
-        gains.append(gain)
+        new = inside(circle, pts) & uncovered
+        gains.append(int(np.count_nonzero(new)))
+        uncovered &= ~new
     return gains
 
 def solution_payload(G: List[Circle], from_sample: int, origin: dict) -> List[dict]:
@@ -249,7 +261,7 @@ def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Poin
     circles_rdd, S_bc = algorithm_3_partition_and_sample(sc, circles, k, seed, cluster_mode)
     
     # NOTE: assumption that all points are broadcasted (or accessible via oracle) to all machines as per paper.
-    points_bc = sc.broadcast(points)
+    points_bc = sc.broadcast(np.asarray(points, dtype=float))
 
     # initial guess for max value v_S = max_{e in S} f({e}). 
     # this is used to generate the sequence of thresholds tau_j for the mappers.
@@ -361,7 +373,7 @@ def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Poi
     circles_rdd = sc.parallelize(shuffled, 16 if cluster_mode else 8) # m
 
     # NOTE: assumption that all points are broadcasted (or accessible via oracle) to all machines as per paper.
-    points_bc = sc.broadcast(points)
+    points_bc = sc.broadcast(np.asarray(points, dtype=float))
 
     # the number of largest elements each machine sends to the central machine.
     top_count = top_factor * k
@@ -469,7 +481,7 @@ def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: lis
           with the 2 extra rounds (not the omitted tricks that reduce it to 2t rounds).
     """
     # NOTE: assumption that all points are broadcasted (or accessible via oracle) to all machines as per paper.
-    points_bc = sc.broadcast(points)
+    points_bc = sc.broadcast(np.asarray(points, dtype=float))
 
     # -------------------------------------------------------------------------
     # ROUND 0: find the maximum-value element
