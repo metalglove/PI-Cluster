@@ -164,7 +164,7 @@ def calculate_partitions(n_points: int, target_mb: int = 160, cores: int = 16, l
             return cores * 2  # 2 partitions per core
         else:
             # For larger datasets, still limit partitions
-            return min(cores * 4, int(data_size_mb / 50))  # Larger chunks (50MB)
+            return max(cores, min(cores * 4, int(data_size_mb / 50)))  # Larger chunks (50MB), at least one per core
     else:
         # Cluster mode: original logic
         # Calculate based on data size
