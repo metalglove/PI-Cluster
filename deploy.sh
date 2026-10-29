@@ -26,7 +26,6 @@ scp ui/index.html pi@raspberrypi:/home/pi/ui/index.html
 
 echo -e "${YELLOW}[4/5] Deploying UI CSS...${NC}"
 scp ui/style.css pi@raspberrypi:/home/pi/ui/style.css
-scp ui/mobile.css pi@raspberrypi:/home/pi/ui/mobile.css
 
 echo -e "${YELLOW}[5/5] Deploying UI JavaScript...${NC}"
 scp ui/script.js pi@raspberrypi:/home/pi/ui/script.js
