@@ -1,6 +1,9 @@
 """
 Circle Cover Problem - MapReduce Algorithm (arXiv:1810.01489)
 Algorithm 6 (Dense Inputs): 1/2 - epsilon approximation in 2 rounds
+Algorithm 7 (Sparse Inputs): 1/2 - epsilon approximation in 2 rounds
+Theorem 8: running Algorithms 6 and 7 in parallel gives a 2-round 1/2 - epsilon approximation for all inputs
+Algorithm 5 (t thresholds): 1 - (1 - 1/(t+1))^t approximation in 2t + 2 rounds (OPT unknown)
 
 SETUP:
   Install dependencies:
@@ -11,6 +14,9 @@ USAGE (local mode):
 
 USAGE (cluster mode):
     python alg.py --cluster --size medium
+
+USAGE (Algorithm 5 with t thresholds):
+    python alg.py --algorithm alg5 --t 3 --size small
 
 SIZE OPTIONS: small (500 circles), medium (2000 circles), large (5000 circles)
 """
@@ -281,6 +287,197 @@ def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Poin
     return best_sol, best_cov
 
 # =============================================================================
+# ALGORITHM 7 (2-Round MapReduce, Sparse Inputs)
+# =============================================================================
+
+def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False, top_factor: int = 2):
+    """
+    Algorithm 7: A 1/2 - epsilon approximation for sparse inputs in 2 rounds of MapReduce.
+     - Round 1: each machine sends its O(k) largest elements to the central machine
+     - Round 2: Central thresholding on the received elements
+    Note: the paper only specifies O(k) elements per machine; we send top_factor * k elements.
+    """
+    # partition V uniformly at random to the m machines.
+    # we shuffle a copy of the circles before parallelizing, as sc.parallelize slices the list in order.
+    shuffled = list(circles)
+    random.Random(seed).shuffle(shuffled)
+    circles_rdd = sc.parallelize(shuffled, 16 if cluster_mode else 8) # m
+
+    # NOTE: assumption that all points are broadcasted (or accessible via oracle) to all machines as per paper.
+    points_bc = sc.broadcast(points)
+
+    # the number of largest elements each machine sends to the central machine.
+    top_count = top_factor * k
+
+    # -------------------------------------------------------------------------
+    # ROUND 1: each machine sends its O(k) largest elements
+    # -------------------------------------------------------------------------
+    def mapper_round1(iterator):
+        # compute f({e}) for every element on this machine and keep the top_count largest.
+        valued = [(compute_coverage([c], points_bc.value), c) for c in iterator]
+        valued.sort(key=lambda x: x[0], reverse=True)
+        return valued[:top_count]
+
+    round1_elements = circles_rdd.mapPartitions(mapper_round1).collect()
+
+    # -------------------------------------------------------------------------
+    # ROUND 2: Central Thresholding
+    # -------------------------------------------------------------------------
+    # S = all elements sent to the central machine, in decreasing order of f({e}).
+    round1_elements.sort(key=lambda x: x[0], reverse=True)
+    S = [c for _, c in round1_elements]
+
+    # v = max_{e in S} f({e}).
+    v = round1_elements[0][0] if round1_elements else 0
+
+    print(f"Elements sent to central machine: {len(S)}")
+    print(f"Max value estimate (from largest elements): {v}")
+
+    best_sol = []
+    best_cov = 0
+
+    # the number of guesses is (1/epsilon) * log(k) as per paper.
+    num_guesses = int(math.ceil((1.0 / epsilon) * math.log(k)))
+
+    for j in range(1, num_guesses + 1):
+        # compute threshold tau_j = (v * ((1 + epsilon) ** j)) / k as per paper.
+        tau_j = (v * ((1.0 + epsilon) ** j)) / k
+
+        # G_j = Greedy(S, empty, tau_j)
+        G = threshold_greedy_local(S, [], k, tau_j, points_bc.value)
+
+        # compute coverage of G using the oracle (compute_coverage) and update best solution if needed.
+        cov = compute_coverage(G, points_bc.value)
+        if cov > best_cov:
+            best_cov = cov
+            best_sol = G
+
+    # return the best solution and its coverage.
+    return best_sol, best_cov
+
+# =============================================================================
+# THEOREM 8 (Algorithms 6 and 7 in parallel)
+# =============================================================================
+
+def theorem_8_combined(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False):
+    """
+    Theorem 8: By running Algorithms 6 and 7 in parallel, we have a 2-round 1/2 - epsilon approximation.
+    We do not know whether the input is dense or sparse, so we run both and return the better of the two solutions.
+    Note: in the paper each machine runs both algorithms in the same 2 rounds; here they run as separate Spark jobs.
+    """
+    print("Running Algorithm 6 (dense)...")
+    sol_6, cov_6 = algorithm_6_dense(sc, circles, points, k, epsilon, seed, cluster_mode)
+    print(f"Algorithm 6 coverage: {cov_6}")
+
+    print("Running Algorithm 7 (sparse)...")
+    sol_7, cov_7 = algorithm_7_sparse(sc, circles, points, k, epsilon, seed, cluster_mode)
+    print(f"Algorithm 7 coverage: {cov_7}")
+
+    # return the better of the two solutions.
+    if cov_7 > cov_6:
+        return sol_7, cov_7
+    return sol_6, cov_6
+
+# =============================================================================
+# ALGORITHM 5 (2t + 2 Rounds MapReduce)
+# =============================================================================
+
+def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, t: int, epsilon: float, seed: int = 42, cluster_mode: bool = False):
+    """
+    Algorithm 5: A 1 - (1 - 1/(t+1))^t approximation in 2t + 2 rounds of MapReduce.
+     - Round 0: extra initial round to find the maximum-value element, which estimates OPT within a factor of k
+     - Rounds 2l - 1 and 2l (for l = 1, ..., t): Algorithm 5 with threshold alpha_l, for every estimate of OPT in parallel
+     - Final round: extra final round to choose the best of the solutions found for the different estimates of OPT
+    Note: Algorithm 5 in the paper assumes OPT is known. We handle unknown OPT as described in Section 2.2,
+          with the 2 extra rounds (not the omitted tricks that reduce it to 2t rounds).
+    """
+    # NOTE: assumption that all points are broadcasted (or accessible via oracle) to all machines as per paper.
+    points_bc = sc.broadcast(points)
+
+    # -------------------------------------------------------------------------
+    # ROUND 0: find the maximum-value element
+    # -------------------------------------------------------------------------
+    # v_max = max_{e in V} f({e}), which gives v_max <= OPT <= k * v_max.
+    v_max = sc.parallelize(circles, 16 if cluster_mode else 8) \
+        .map(lambda c: compute_coverage([c], points_bc.value)) \
+        .max()
+
+    # the estimates of OPT are v_max * (1 + epsilon)^g for g = 0, ..., ceil(log_{1+epsilon} k),
+    # so that one of them is within a factor of 1 + epsilon of OPT.
+    num_estimates = int(math.ceil(math.log(k) / math.log(1.0 + epsilon))) + 1
+    opt_estimates = [v_max * ((1.0 + epsilon) ** g) for g in range(num_estimates)]
+
+    print(f"Max single-element value: {v_max}")
+    print(f"Running {num_estimates} estimates of OPT with t = {t} thresholds ({2 * t + 2} rounds)...")
+
+    # G <- empty, for every estimate of OPT.
+    solutions = {g: [] for g in range(num_estimates)}
+
+    for l in range(1, t + 1):
+        # -------------------------------------------------------------------------
+        # ROUND 2l - 1: Parallel Filtering
+        # -------------------------------------------------------------------------
+        # a fresh random partition and sample for every threshold, as per paper.
+        circles_rdd, S_bc = algorithm_3_partition_and_sample(sc, circles, k, seed + l, cluster_mode)
+        solutions_bc = sc.broadcast(solutions)
+
+        # alpha_l = (1 - 1/(t+1))^l * OPT / k as per paper.
+        def alpha(g: int) -> float:
+            return ((1.0 - 1.0 / (t + 1)) ** l) * opt_estimates[g] / k
+
+        def mapper_round(iterator):
+            local_circles = list(iterator)
+            local_res = []
+
+            for g in range(num_estimates):
+                alpha_l = alpha(g)
+
+                # G0 = Greedy(S, G, alpha_l)
+                G0 = threshold_greedy_local(S_bc.value, solutions_bc.value[g], k, alpha_l, points_bc.value)
+
+                # Ri = Filter(Vi, G0, alpha_l)
+                if len(G0) < k:
+                    Ri = threshold_filter_local(local_circles, G0, alpha_l, points_bc.value)
+                    if Ri:
+                        local_res.append((g, Ri))
+
+            return local_res
+
+        # we aggregate the result by key (g) to get the union of all Ri for each estimate g across all machines.
+        # estimates for which no machine sent any Ri are missing here and get an empty union.
+        aggregated = dict(circles_rdd.mapPartitions(mapper_round) \
+            .reduceByKey(add) \
+            .collect())
+
+        # -------------------------------------------------------------------------
+        # ROUND 2l: Central Aggregation
+        # -------------------------------------------------------------------------
+        for g in range(num_estimates):
+            alpha_l = alpha(g)
+
+            # recompute G0 = Greedy(S, G, alpha_l) on the central machine as in the first round.
+            G0 = threshold_greedy_local(S_bc.value, solutions[g], k, alpha_l, points_bc.value)
+
+            # G = Greedy(union of all Ri, G0, alpha_l)
+            solutions[g] = threshold_greedy_local(aggregated.get(g, []), G0, k, alpha_l, points_bc.value)
+
+        print(f"  Threshold l={l}: solution sizes {[len(solutions[g]) for g in range(num_estimates)]}")
+
+    # -------------------------------------------------------------------------
+    # FINAL ROUND: choose the best solution over all estimates of OPT
+    # -------------------------------------------------------------------------
+    best_sol = []
+    best_cov = 0
+    for g in range(num_estimates):
+        cov = compute_coverage(solutions[g], points_bc.value)
+        if cov > best_cov:
+            best_cov = cov
+            best_sol = solutions[g]
+
+    # return the best solution and its coverage.
+    return best_sol, best_cov
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -288,6 +485,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cluster", action="store_true")
     parser.add_argument("--size", type=str, default="small")
+    parser.add_argument("--algorithm", type=str, choices=["theorem8", "alg5"], default="theorem8")
+    parser.add_argument("--t", type=int, default=2, help="number of thresholds for Algorithm 5")
     args = parser.parse_args()
     
     SIZE_CONFIGS = {
@@ -308,8 +507,10 @@ def main():
     circles = generate_circles(cfg["N_CIRCLES"], (0,0,1000,1000), (30,100), seed=43)
     
     # 3. Algorithm
-    print("Running Algorithm 6...")
-    sol, cov = algorithm_6_dense(sc, circles, points, k=10, epsilon=0.2, seed=56, cluster_mode=args.cluster)
+    if args.algorithm == "alg5":
+        sol, cov = algorithm_5_multi_round(sc, circles, points, k=10, t=args.t, epsilon=0.2, seed=56, cluster_mode=args.cluster)
+    else:
+        sol, cov = theorem_8_combined(sc, circles, points, k=10, epsilon=0.2, seed=56, cluster_mode=args.cluster)
     
     print("-" * 60)
     print(f"Solution Size: {len(sol)}")
