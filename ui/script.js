@@ -1202,7 +1202,9 @@ async function showCompare(on) {
 
     // Like-for-like only if all runs drew the same points (same size, same generator).
     const done = Object.keys(ALGORITHMS).filter(a => summaries[a]);
-    const sig = r => JSON.stringify([r.final.total_points, r.init.config.n_circles, r.init.points.slice(0, 50)]);
+    // The drivers name their input in config.dataset; older runs fall back to the points shown.
+    const sig = r => r.init.config.dataset ||
+        JSON.stringify([r.final.total_points, r.init.config.n_circles, r.init.points.slice(0, 50)]);
     const same = done.every(a => sig(summaries[a]) === sig(summaries[done[0]]));
     $('cvLede').textContent = !done.length
         ? 'No finished runs yet.'
