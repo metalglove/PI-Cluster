@@ -1099,8 +1099,14 @@ async function showCompare(on) {
     }).join('');
 
     const g = summaries.greedy, t = summaries.theorem8;
-    $('cvLede').textContent = g && t
-        ? `Same kind of input (${fmt(g.final.total_points)} and ${fmt(t.final.total_points)} points). ` +
+    // Like-for-like only if both runs drew the same points (same size, same generator).
+    const same = g && t && g.final.total_points === t.final.total_points &&
+        g.init.config.n_circles === t.init.config.n_circles &&
+        JSON.stringify(g.init.points.slice(0, 50)) === JSON.stringify(t.init.points.slice(0, 50));
+    $('cvLede').textContent = g && t && !same
+        ? 'These two runs used different inputs, so they are not comparable. Run both on the same dataset size.'
+        : g && t
+        ? `Same input: ${fmt(g.final.total_points)} points and ${fmt(g.init.config.n_circles)} candidate circles. ` +
           `Theorem 8 needs ${t.rounds} rounds where threshold greedy needs ${fmt(g.rounds)}, and covers ` +
           `${fmt(t.final.coverage)} points against ${fmt(g.final.coverage)}. Both strips use the same scale: ` +
           `one column per Spark job.`
