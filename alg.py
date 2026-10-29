@@ -587,7 +587,8 @@ def main():
     
     # 2. Data
     print("Generating data...")
-    points = generate_clustered_points(cfg["N_POINTS"], cfg["N_CLUSTERS"], (0,0,1000,1000), seed=42)
+    # same data as main.py (cluster_std=80), so the two algorithms can be compared directly
+    points = generate_clustered_points(cfg["N_POINTS"], cfg["N_CLUSTERS"], (0,0,1000,1000), cluster_std=80, seed=42)
     circles = generate_circles(cfg["N_CIRCLES"], (0,0,1000,1000), (30,100), seed=43)
     
     if ui:
