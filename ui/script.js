@@ -694,7 +694,7 @@ function renderCluster() {
                 // Theorem 8, round 1: what this partition held and what it sent on.
                 const sent = p.sent_distinct ?? p.sent;
                 return `<div class="part${flash ? ' flash' : ''}"
-                            style="--c:${colorFor(k)}; flex-grow:${Math.max(1, p.held)}"
+                            style="--c:${colorFor(k)}"
                             title="Partition ${p.partition}: ${p.held} circles, sent ${p.sent} (${sent} distinct), ${p.ms} ms">
                         <span class="fill" style="height:${p.held ? 100 * Math.min(1, sent / p.held) : 0}%"></span>
                         <span class="pid">p${p.partition}</span>
@@ -707,7 +707,7 @@ function renderCluster() {
                 ? `best ${fmt(p.best)}`
                 : `${fmt(p.passed)} ≥ τ`;
             return `<div class="part${picked ? ' picked' : ''}${flash ? ' flash' : ''}"
-                        style="--c:${colorFor(k)}; flex-grow:${Math.max(1, p.evaluated)}"
+                        style="--c:${colorFor(k)}"
                         title="Partition ${p.partition}: ${p.evaluated} circles, ${detail}, ${p.ms} ms">
                     <span class="fill" style="height:${100 * share}%"></span>
                     <span class="pid">p${p.partition}</span>

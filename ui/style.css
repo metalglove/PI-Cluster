@@ -309,9 +309,10 @@ html.presenting .now-line { font-size: 26px; min-height: 4em; }
 html.presenting .stats dd { font-size: 28px; }
 html.presenting .code { font-size: 15px; }
 html.presenting .hint { font-size: 14px; }
-/* Figure and playback fit one screen; the side column scrolls on its own. */
+/* Figure and playback fit one screen; the side column stays beside them while it is
+   shorter than the figure, and otherwise scrolls with the page, never clipped. */
 html.presenting .canvas-wrap { width: min(100%, calc(100vh - 300px)); margin: 0 auto; }
-html.presenting .side-col { max-height: calc(100vh - 100px); overflow-y: auto; position: sticky; top: 12px; }
+html.presenting .side-col { position: sticky; top: 12px; }
 
 /* ---------- Side-by-side comparison ---------- */
 .compare-view {
