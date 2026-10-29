@@ -135,6 +135,9 @@ h2 { font-size: 18px; margin-bottom: 4px; }
     align-items: start;
 }
 .figure-col, .side-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* The two columns get their own box so the sticky side column in Present mode stops at
+   the bottom of the figure instead of riding over the cluster section. */
+.stage { grid-column: 1 / -1; display: grid; grid-template-columns: inherit; gap: inherit; align-items: start; }
 .cluster { grid-column: 1 / -1; }
 
 .card {

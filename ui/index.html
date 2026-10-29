@@ -59,72 +59,74 @@
     </header>
 
     <main class="layout">
-        <section class="figure-col">
-            <figure class="card figure">
-                <div class="canvas-wrap">
-                    <canvas id="vizCanvas"></canvas>
-                    <div class="empty-note" id="emptyNote">No run yet. Pick a dataset size and press <b>Run on cluster</b>.</div>
+        <div class="stage">
+            <section class="figure-col">
+                <figure class="card figure">
+                    <div class="canvas-wrap">
+                        <canvas id="vizCanvas"></canvas>
+                        <div class="empty-note" id="emptyNote">No run yet. Pick a dataset size and press <b>Run on cluster</b>.</div>
+                    </div>
+                    <figcaption>
+                        <span id="caption">Points are the ground set. Each selected circle is coloured by the Pi whose partition found it.</span>
+                        <span class="legend" id="legend"></span>
+                    </figcaption>
+                </figure>
+
+                <div class="card playback" id="playback">
+                    <div class="pb-buttons">
+                        <button class="btn icon" id="pbStart" title="Back to start" aria-label="Back to start">⏮</button>
+                        <button class="btn icon" id="pbBack" title="Previous event (←)" aria-label="Previous event">◀ Step</button>
+                        <button class="btn icon wide" id="pbPlay" title="Play / pause (space)" aria-label="Play or pause">Pause</button>
+                        <button class="btn icon" id="pbFwd" title="Next event (→)" aria-label="Next event">Step ▶</button>
+                        <button class="btn icon" id="pbEnd" title="Jump to latest" aria-label="Jump to latest">⏭</button>
+                    </div>
+                    <div class="scrub">
+                        <input type="range" id="pbScrub" min="0" max="0" value="0" aria-label="Timeline">
+                        <div class="ticks" id="chapterTicks" aria-hidden="true"></div>
+                    </div>
+                    <div class="pb-meta">
+                        <span id="pbLabel">0 / 0</span>
+                        <select id="pbSpeed" aria-label="Playback speed">
+                            <option value="0.5">0.5×</option>
+                            <option value="1" selected>1×</option>
+                            <option value="2">2×</option>
+                            <option value="4">4×</option>
+                            <option value="16">16×</option>
+                        </select>
+                    </div>
+                    <nav class="chapters" id="chapters" aria-label="Chapters"></nav>
                 </div>
-                <figcaption>
-                    <span id="caption">Points are the ground set. Each selected circle is coloured by the Pi whose partition found it.</span>
-                    <span class="legend" id="legend"></span>
-                </figcaption>
-            </figure>
+            </section>
 
-            <div class="card playback" id="playback">
-                <div class="pb-buttons">
-                    <button class="btn icon" id="pbStart" title="Back to start" aria-label="Back to start">⏮</button>
-                    <button class="btn icon" id="pbBack" title="Previous event (←)" aria-label="Previous event">◀ Step</button>
-                    <button class="btn icon wide" id="pbPlay" title="Play / pause (space)" aria-label="Play or pause">Pause</button>
-                    <button class="btn icon" id="pbFwd" title="Next event (→)" aria-label="Next event">Step ▶</button>
-                    <button class="btn icon" id="pbEnd" title="Jump to latest" aria-label="Jump to latest">⏭</button>
+            <section class="side-col">
+                <div class="card">
+                    <div class="now-line" id="nowLine">Waiting for a run.</div>
+                    <dl class="stats">
+                        <div><dt id="sGuessLabel">Guess j</dt><dd><span id="sGuess">–</span><small id="sGuessTotal"></small></dd></div>
+                        <div><dt id="sTauLabel">Threshold τ</dt><dd id="sTau">–</dd></div>
+                        <div><dt id="sSizeLabel">|S| / k</dt><dd><span id="sSize">–</span><small id="sK"></small></dd></div>
+                        <div><dt id="sCovLabel">f(S)</dt><dd id="sCov">–</dd></div>
+                    </dl>
+                    <div class="compare" id="compare"></div>
                 </div>
-                <div class="scrub">
-                    <input type="range" id="pbScrub" min="0" max="0" value="0" aria-label="Timeline">
-                    <div class="ticks" id="chapterTicks" aria-hidden="true"></div>
+
+                <div class="card">
+                    <h2>Marginal gain per pick</h2>
+                    <p class="hint" id="gainHint"></p>
+                    <div class="chart-wrap"><canvas id="gainChart"></canvas></div>
                 </div>
-                <div class="pb-meta">
-                    <span id="pbLabel">0 / 0</span>
-                    <select id="pbSpeed" aria-label="Playback speed">
-                        <option value="0.5">0.5×</option>
-                        <option value="1" selected>1×</option>
-                        <option value="2">2×</option>
-                        <option value="4">4×</option>
-                        <option value="16">16×</option>
-                    </select>
+
+                <div class="card">
+                    <h2 id="codeTitle">Algorithm</h2>
+                    <ol class="code" id="code"></ol>
                 </div>
-                <nav class="chapters" id="chapters" aria-label="Chapters"></nav>
-            </div>
-        </section>
 
-        <section class="side-col">
-            <div class="card">
-                <div class="now-line" id="nowLine">Waiting for a run.</div>
-                <dl class="stats">
-                    <div><dt id="sGuessLabel">Guess j</dt><dd><span id="sGuess">–</span><small id="sGuessTotal"></small></dd></div>
-                    <div><dt id="sTauLabel">Threshold τ</dt><dd id="sTau">–</dd></div>
-                    <div><dt id="sSizeLabel">|S| / k</dt><dd><span id="sSize">–</span><small id="sK"></small></dd></div>
-                    <div><dt id="sCovLabel">f(S)</dt><dd id="sCov">–</dd></div>
-                </dl>
-                <div class="compare" id="compare"></div>
-            </div>
-
-            <div class="card">
-                <h2>Marginal gain per pick</h2>
-                <p class="hint" id="gainHint"></p>
-                <div class="chart-wrap"><canvas id="gainChart"></canvas></div>
-            </div>
-
-            <div class="card">
-                <h2 id="codeTitle">Algorithm</h2>
-                <ol class="code" id="code"></ol>
-            </div>
-
-            <div class="card guesses-card">
-                <h2>Guesses</h2>
-                <div class="guesses" id="guesses"><p class="hint">One row per threshold tried.</p></div>
-            </div>
-        </section>
+                <div class="card guesses-card">
+                    <h2>Guesses</h2>
+                    <div class="guesses" id="guesses"><p class="hint">One row per threshold tried.</p></div>
+                </div>
+            </section>
+        </div>
 
         <section class="card cluster">
             <div class="cluster-head">
