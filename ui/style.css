@@ -182,6 +182,12 @@ figcaption {
 .stats dd { margin: 2px 0 0; font-family: var(--mono); font-size: 22px; font-weight: 500; white-space: nowrap; }
 .stats small { font-size: 13px; color: var(--ink-3); font-weight: 400; }
 
+.compare { margin-top: 14px; border-top: 1px solid var(--rule); padding-top: 8px; font-size: 13px; color: var(--ink-2); }
+.compare:empty { display: none; }
+.compare div { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+.compare b { font-weight: 600; color: var(--ink); }
+.compare span:last-child { font-family: var(--mono); font-size: 12px; text-align: right; }
+
 .chart-wrap { height: 190px; }
 .chart-wrap canvas { width: 100%; height: 100%; display: block; }
 
@@ -190,6 +196,8 @@ figcaption {
 .code li.i1 { padding-left: 26px; }
 .code li.i2 { padding-left: 44px; }
 .code li em { color: var(--ink-3); font-style: normal; font-family: var(--sans); font-size: 12px; }
+.code li.head { font-family: var(--sans); font-weight: 600; color: var(--ink); font-size: 12px; padding-top: 8px; }
+.code li.head:first-child { padding-top: 3px; }
 .code li.active { border-left-color: var(--ink); background: var(--highlight); color: var(--ink); }
 
 .guesses { display: flex; flex-direction: column; gap: 2px; max-height: 360px; overflow-y: auto; }
@@ -204,6 +212,8 @@ figcaption {
     color: var(--ink-2);
     border-radius: 3px;
 }
+.g-head { font-size: 12px; font-weight: 600; color: var(--ink); padding: 6px 4px 2px; }
+.g-head:first-child { padding-top: 0; }
 .g-row.current { background: var(--highlight); color: var(--ink); }
 .g-row.best { color: var(--ink); font-weight: 500; }
 .g-row.best .g-cov::after { content: " ★"; }
@@ -253,6 +263,7 @@ figcaption {
 .part.picked .pid::after { content: " ← picked"; font-family: var(--sans); }
 .part.flash { animation: flash 0.6s ease-out; }
 @keyframes flash { from { background: var(--flash); } }
+.part.central { border-style: dashed; border-color: var(--c); flex-grow: 1; }
 .parts-empty { color: var(--ink-3); font-size: 13px; align-self: center; }
 
 /* ---------- Narrow screens ---------- */

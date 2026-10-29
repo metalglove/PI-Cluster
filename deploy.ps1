@@ -5,8 +5,10 @@ Write-Host "Deploying to Pi Cluster..." -ForegroundColor Cyan
 Write-Host ""
 
 # Main algorithm
-Write-Host "[1/5] Deploying main.py..." -ForegroundColor Yellow
+Write-Host "[1/5] Deploying main.py, alg.py and viz_client.py..." -ForegroundColor Yellow
 scp main.py pi@raspberrypi:/home/pi/main.py
+scp alg.py pi@raspberrypi:/home/pi/alg.py
+scp viz_client.py pi@raspberrypi:/home/pi/viz_client.py
 
 # Visualization server
 Write-Host "[2/5] Deploying viz_server.py..." -ForegroundColor Yellow

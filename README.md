@@ -63,6 +63,8 @@ python main.py --size small
 # Run with visualization server (in separate terminals)
 python viz_server.py  # Terminal 1
 python main.py --ui-url http://localhost:8000 --size medium  # Terminal 2
+python alg.py --ui-url http://localhost:8000 --size medium   # or the 2-round algorithm
+# (or pick the algorithm and size in the UI and press "Run on cluster")
 
 # Run the paper's 2-round algorithm (Theorem 8: Algorithms 6 + 7)
 python alg.py --size small
@@ -146,6 +148,7 @@ ssh pi@raspberrypi "tail -50 ~/spark/logs/spark-pi-org.apache.spark.deploy.maste
 # Copy scripts to Pi
 scp main.py pi@raspberrypi:~/main.py
 scp alg.py pi@raspberrypi:~/alg.py
+scp viz_client.py pi@raspberrypi:~/viz_client.py
 
 # Run on cluster (without visualization)
 ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --size medium"

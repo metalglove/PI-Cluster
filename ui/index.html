@@ -30,15 +30,15 @@
 <body>
     <header class="masthead">
         <div class="title-block">
-            <h1>Circle cover, threshold greedy</h1>
-            <p class="lede">
-                Pick <i>k</i> circles that cover as many points as possible.
-                OPT is unknown, so the algorithm tries a ladder of thresholds τ and keeps the best run.
-                Every candidate check is one Spark job, split across the Raspberry Pis.
-            </p>
+            <h1 id="title">Circle cover</h1>
+            <p class="lede" id="lede"></p>
         </div>
 
         <div class="run-block">
+            <div class="segmented" role="radiogroup" aria-label="Algorithm">
+                <label><input type="radio" name="algorithm" value="greedy" checked><span>Threshold greedy</span></label>
+                <label><input type="radio" name="algorithm" value="theorem8"><span>2 rounds (Thm 8)</span></label>
+            </div>
             <div class="segmented" role="radiogroup" aria-label="Dataset size">
                 <label><input type="radio" name="jobSize" value="small" checked><span>2K pts</span></label>
                 <label><input type="radio" name="jobSize" value="medium"><span>25K pts</span></label>
@@ -91,32 +91,21 @@
                 <dl class="stats">
                     <div><dt>Guess <i>j</i></dt><dd><span id="sGuess">–</span><small id="sGuessTotal"></small></dd></div>
                     <div><dt>Threshold τ</dt><dd id="sTau">–</dd></div>
-                    <div><dt>|S| / <i>k</i></dt><dd><span id="sSize">–</span><small id="sK"></small></dd></div>
-                    <div><dt><i>f</i>(S)</dt><dd id="sCov">–</dd></div>
+                    <div><dt id="sSizeLabel">|S| / k</dt><dd><span id="sSize">–</span><small id="sK"></small></dd></div>
+                    <div><dt id="sCovLabel">f(S)</dt><dd id="sCov">–</dd></div>
                 </dl>
+                <div class="compare" id="compare"></div>
             </div>
 
             <div class="card">
                 <h2>Marginal gain per pick</h2>
-                <p class="hint">Bar = Δ<i>f</i>(c | S) of the circle added at that step. Dashed line = τ. A circle is taken only if its gain clears τ.</p>
+                <p class="hint" id="gainHint"></p>
                 <div class="chart-wrap"><canvas id="gainChart"></canvas></div>
             </div>
 
             <div class="card">
-                <h2>Algorithm</h2>
-                <ol class="code" id="code">
-                    <li id="line-1">f(e) ← max single-circle coverage <em>(1 Spark job)</em></li>
-                    <li id="line-2">y ← ⌈log k / log(1+ε)⌉</li>
-                    <li id="line-3">for j = 0 … y:</li>
-                    <li id="line-4" class="i1">τ ← (1+ε)<sup>j</sup> · f(e) / 2k</li>
-                    <li id="line-5" class="i1">S ← ∅</li>
-                    <li id="line-6" class="i1">while |S| &lt; k:</li>
-                    <li id="line-7" class="i2">find any c with Δf(c | S) ≥ τ <em>(1 Spark job)</em></li>
-                    <li id="line-8" class="i2">if found: S ← S ∪ {c}</li>
-                    <li id="line-9" class="i2">else: stop this guess</li>
-                    <li id="line-10" class="i1">keep S if f(S) is the best so far</li>
-                    <li id="line-11">return best S</li>
-                </ol>
+                <h2 id="codeTitle">Algorithm</h2>
+                <ol class="code" id="code"></ol>
             </div>
 
             <div class="card">
@@ -133,7 +122,7 @@
                 </div>
                 <div class="round-count">
                     <span class="big" id="roundCount">0</span>
-                    <span>rounds (Spark jobs) so far</span>
+                    <span id="roundLabel">rounds (Spark jobs) so far</span>
                 </div>
             </div>
 
