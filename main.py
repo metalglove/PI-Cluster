@@ -325,14 +325,17 @@ def evaluate_on_cluster(
     sc,
     indexed_circles: List[Tuple[int, Circle]],
     score,
-    threshold: Optional[float] = None
+    threshold: Optional[float] = None,
+    keep: str = "all"
 ) -> Tuple[List[Tuple[int, int, int]], List[dict]]:
     """
     Score every candidate circle on the cluster in one Spark job (= one MapReduce round).
 
     Returns (results, partition_stats):
       results: (circle_index, score, partition_id) for candidates with score >= threshold
-               (all candidates when threshold is None), in partition order.
+               (all candidates when threshold is None), in partition order. With keep="first"
+               each partition sends only its first such candidate, with keep="best" only its
+               highest-scoring one (the first, on ties).
       partition_stats: one dict per partition saying which machine ran it and how much
                work it did, so the UI can show the work being split across the Pis.
     """
@@ -342,19 +345,27 @@ def evaluate_on_cluster(
         host, ip = machine_identity()
         kept = []
         evaluated = 0
+        passed = 0
         best = 0
+        best_item = None
         for idx, circle in iterator:
             value = score(circle)
             evaluated += 1
-            best = max(best, value)
+            if best_item is None or value > best:
+                best, best_item = value, (idx, value, pid)
             if threshold is None or value >= threshold:
-                kept.append((idx, value, pid))
+                passed += 1
+                if keep == "all" or (keep == "first" and not kept):
+                    kept.append((idx, value, pid))
+        if keep == "best" and best_item is not None:
+            kept = [best_item]
         yield ("stats", {
             "partition": pid,
             "host": host,
             "ip": ip,
             "evaluated": evaluated,
-            "passed": len(kept),
+            "passed": passed,
+            "sent": len(kept),
             "best": best,
             "ms": round((time.time() - start) * 1000, 1)
         })
@@ -387,7 +398,8 @@ def find_max_single_coverage(
     def single_coverage(circle):
         return int(np.count_nonzero(inside(circle, points_bc.value)))
 
-    results, stats = evaluate_on_cluster(sc, list(enumerate(circles)), single_coverage)
+    # Each partition only needs to send its best circle: the max over those is the overall max.
+    results, stats = evaluate_on_cluster(sc, list(enumerate(circles)), single_coverage, keep="best")
 
     # Clean up broadcast to free memory
     points_bc.unpersist()
@@ -429,7 +441,9 @@ def find_candidate_above_threshold(
     # Only consider remaining circles
     candidates = [(i, circles[i]) for i in remaining_indices]
 
-    results, stats = evaluate_on_cluster(sc, candidates, marginal_gain, threshold)
+    # Each partition only sends its first candidate >= threshold: the driver takes the first
+    # one in partition order anyway, so the pick is the same and far fewer circles travel.
+    results, stats = evaluate_on_cluster(sc, candidates, marginal_gain, threshold, keep="first")
 
     # Clean up broadcasts to free memory
     points_bc.unpersist()
