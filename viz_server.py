@@ -118,14 +118,18 @@ async def run_algorithm(request: Request):
 
         # Detect environment and build appropriate command
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        # greedy: main.py (threshold greedy, many rounds); theorem8: alg.py (Algorithms 6 + 7, two rounds)
-        script = "alg.py" if algorithm in ("theorem8", "alg5") else "main.py"
-        try:
-            t = max(1, min(6, int(body.get('t', 2))))   # Algorithm 5's number of thresholds
-        except Exception:
-            t = 2
-        # alg5: Algorithm 5, 2t + 2 rounds
-        extra_args = ["--algorithm", algorithm, "--t", str(t)] if script == "alg.py" else []
+        # main.py runs every algorithm: greedy (threshold greedy, many rounds), theorem8 (Algorithms 6 + 7,
+        # two rounds) or alg5 (Algorithm 5, 2t + 2 rounds)
+        if algorithm not in ("greedy", "theorem8", "alg5"):
+            algorithm = 'greedy'
+        script = "main.py"
+        extra_args = ["--algorithm", algorithm]
+        if algorithm == "alg5":
+            try:
+                t = max(1, min(6, int(body.get('t', 2))))   # Algorithm 5's number of thresholds
+            except Exception:
+                t = 2
+            extra_args += ["--t", str(t)]
         main_py_path = os.path.join(script_dir, script)
         
         # Detect if we're on Pi cluster or local Windows/Mac
@@ -156,7 +160,7 @@ async def run_algorithm(request: Request):
         logger.info(f"Command: {' '.join(cmd)}")
         
         # Run as subprocess. Output goes to a log file: an unread PIPE fills up and stalls the job.
-        log_path = os.path.join(script_dir, f"last_run_{script.replace('.py', '')}.log")
+        log_path = os.path.join(script_dir, f"last_run_{algorithm}.log")
         with open(log_path, "w") as log_file:
             process = subprocess.Popen(
                 cmd,

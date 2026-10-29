@@ -1,28 +1,60 @@
-# Circle Cover Problem - Greedy Thresholding Algorithm with PySpark
-# 1/2(1-ε) approximation using logarithmic guesses for unknown OPT
+"""
+Circle Cover Problem on a Raspberry Pi cluster with PySpark
+
+Start-up for every algorithm: reads the command line, starts Spark, generates the data,
+binds the visualization UI, and runs the chosen algorithm from algorithms/.
+
+ALGORITHMS (--algorithm):
+  greedy    sequential threshold greedy: 1/2(1-ε) approximation, one Spark job per greedy step (default)
+  theorem8  Algorithms 6 and 7 in parallel (arXiv:1810.01489): 1/2 - epsilon approximation in 2 rounds
+  alg5      Algorithm 5 with t thresholds (arXiv:1810.01489): 1 - (1 - 1/(t+1))^t approximation in 2t + 2 rounds
+
+USAGE (local mode):
+    python main.py --size small
+    python main.py --algorithm theorem8 --size small
+    python main.py --algorithm alg5 --t 3 --size small
+
+USAGE (cluster mode):
+    python main.py --cluster --algorithm theorem8 --size medium
+
+USAGE (with the visualization server):
+    python main.py --ui-url http://localhost:8000 --size medium
+
+SIZE OPTIONS: small (2K points, 500 circles), medium (25K, 2000), large (100K, 5000)
+"""
 
 import argparse
 import math
+import multiprocessing
 import os
 import random
 import sys
+import tempfile
 import time
-from typing import List, Tuple, Set, Optional
-import numpy as np
+import zipfile
 from pyspark.sql import SparkSession
 
-from viz_client import UIClient, machine_identity, ship_to_workers
+from data import SIZE_CONFIGS, BOUNDS, RADIUS_RANGE, CLUSTER_STD, SEED, generate_dataset
+from viz_client import UIClient
+from algorithms.greedy import greedy_with_guesses
+from algorithms.theorem8 import theorem_8_combined
+from algorithms.alg5 import algorithm_5_multi_round
 
 # Configure PySpark to use the same Python as the script
 os.environ['PYSPARK_PYTHON'] = sys.executable
 os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
 
-# Type aliases
-Point = Tuple[float, float]           # (x, y)
-Circle = Tuple[float, float, float]   # (cx, cy, radius)
-
-# Cluster configuration
+# used when running in cluster mode (raspberry pi) to specify the Spark master URL; otherwise, 
+# ignored when running in local mode (e.g., on a single machine with multiple cores).
 SPARK_MASTER_URL = "spark://192.168.1.223:7077"
+
+# Problem parameters, the same for every algorithm
+K = 10  # Max circles to select
+EPSILON = 0.2
+ALGORITHM_SEED = 56  # random partition and sample of the MapReduce algorithms
+
+# The modules Spark tasks use; the workers need them too (see ship_code_to_workers)
+CODE = ["data.py", "oracle.py", "viz_client.py", "algorithms"]
 
 
 # =============================================================================
@@ -40,9 +72,8 @@ def create_spark_session(app_name: str = "CircleCover", cluster_mode: bool = Fal
             .config("spark.cores.max", "8")
     else:
         # Local mode optimizations for better performance
-        import multiprocessing
         num_cores = multiprocessing.cpu_count()
-        
+
         builder = builder.master(f"local[{num_cores}]") \
             .config("spark.driver.memory", "4g") \
             .config("spark.sql.shuffle.partitions", "8") \
@@ -53,523 +84,25 @@ def create_spark_session(app_name: str = "CircleCover", cluster_mode: bool = Fal
     return builder.getOrCreate()
 
 
-# =============================================================================
-# DATA GENERATION
-# =============================================================================
-
-def generate_clustered_points(
-    n_points: int,
-    n_clusters: int,
-    bounds: Tuple[float, float, float, float],
-    cluster_std: float = 50.0,
-    seed: Optional[int] = None
-) -> List[Point]:
+def ship_code_to_workers(sc) -> None:
     """
-    Generate points clustered around random centers.
-
-    Args:
-        n_points: Total number of points to generate
-        n_clusters: Number of cluster centers
-        bounds: (min_x, min_y, max_x, max_y) bounding box
-        cluster_std: Standard deviation for Gaussian distribution around centers
-        seed: Random seed for reproducibility
+    Make our modules importable inside Spark tasks. The algorithms run on the workers, but on the
+    Pis this code is only on the master, so zip it and let Spark send it to every executor.
     """
-    if seed is not None:
-        random.seed(seed)
-
-    min_x, min_y, max_x, max_y = bounds
-
-    # Generate cluster centers
-    centers = [
-        (random.uniform(min_x, max_x), random.uniform(min_y, max_y))
-        for _ in range(n_clusters)
-    ]
-
-    # Generate points around clusters
-    points = []
-    points_per_cluster = n_points // n_clusters
-    remainder = n_points % n_clusters
-
-    for i, (cx, cy) in enumerate(centers):
-        # Distribute remainder points to first few clusters
-        count = points_per_cluster + (1 if i < remainder else 0)
-        for _ in range(count):
-            x = random.gauss(cx, cluster_std)
-            y = random.gauss(cy, cluster_std)
-            # Clamp to bounds
-            x = max(min_x, min(max_x, x))
-            y = max(min_y, min(max_y, y))
-            points.append((x, y))
-
-    return points
-
-
-def generate_circles(
-    n_circles: int,
-    bounds: Tuple[float, float, float, float],
-    radius_range: Tuple[float, float],
-    seed: Optional[int] = None
-) -> List[Circle]:
-    """
-    Generate circles with random centers and variable radii.
-
-    Args:
-        n_circles: Number of circles to generate
-        bounds: (min_x, min_y, max_x, max_y) bounding box for centers
-        radius_range: (min_radius, max_radius) range for radii
-        seed: Random seed for reproducibility
-    """
-    if seed is not None:
-        random.seed(seed)
-
-    min_x, min_y, max_x, max_y = bounds
-    min_r, max_r = radius_range
-
-    circles = []
-    for _ in range(n_circles):
-        cx = random.uniform(min_x, max_x)
-        cy = random.uniform(min_y, max_y)
-        r = random.uniform(min_r, max_r)
-        circles.append((cx, cy, r))
-
-    return circles
-
-
-# =============================================================================
-# PARTITIONING & SAMPLING
-# =============================================================================
-
-def calculate_partitions(n_points: int, target_mb: int = 160, cores: int = 16, local_mode: bool = False) -> int:
-    """
-    Calculate optimal number of partitions based on data size and cluster resources.
-    
-    Args:
-        n_points: Number of points in dataset
-        target_mb: Target size per partition in MB (128-192 MB recommended for Pi cluster)
-        cores: Total cores available in cluster (default: 16 for 4-node Pi cluster)
-        local_mode: If True, optimize for local single-machine execution
-    
-    Returns:
-        Optimal number of partitions
-    """
-    # Estimate: ~32 bytes per point (x, y, id, metadata)
-    data_size_mb = (n_points * 32) / (1024 * 1024)
-    
-    if local_mode:
-        # Local mode: fewer partitions to reduce overhead
-        # For small datasets, use minimal partitions
-        if n_points < 10000:
-            return cores  # 1 partition per core
-        elif n_points < 100000:
-            return cores * 2  # 2 partitions per core
-        else:
-            # For larger datasets, still limit partitions
-            return max(cores, min(cores * 4, int(data_size_mb / 50)))  # Larger chunks (50MB), at least one per core
-    else:
-        # Cluster mode: original logic
-        # Calculate based on data size
-        optimal = max(1, int(data_size_mb / target_mb))
-        
-        # Also consider available cores (2-3x parallelism)
-        min_partitions = cores * 2
-        
-        return max(optimal, min_partitions)
-
-
-def sample_points_for_ui(
-    points_rdd,
-    max_display: int = 5000,
-    seed: int = 42
-) -> Tuple[List[Point], int]:
-    """
-    Sample points uniformly for UI visualization.
-    
-    Args:
-        points_rdd: Full RDD of points
-        max_display: Maximum points to send to UI
-        seed: Random seed for reproducibility
-    
-    Returns:
-        Tuple of (sampled_points_list, total_count)
-    """
-    total_points = points_rdd.count()
-    
-    if total_points <= max_display:
-        # Small dataset - send all points
-        return points_rdd.collect(), total_points
-    
-    # Calculate sampling fraction
-    fraction = max_display / total_points
-    
-    # Use RDD.sample() for distributed sampling
-    sampled = points_rdd.sample(
-        withReplacement=False,
-        fraction=fraction,
-        seed=seed
-    )
-    sampled_points = sampled.collect()
-    
-    print(f"UI Sampling: {len(sampled_points)} / {total_points} points "
-          f"({100*fraction:.1f}%)")
-    
-    return sampled_points, total_points
-
-
-def stratified_sample_for_ui(
-    points_rdd,
-    bounds: Tuple[float, float, float, float],
-    grid_size: int = 50,
-    points_per_cell: int = 10
-) -> Tuple[List[Point], int]:
-    """
-    Stratified sampling: divide space into grid, sample from each cell.
-    Ensures good spatial distribution across the canvas.
-    
-    Args:
-        points_rdd: Full RDD of points
-        bounds: (min_x, min_y, max_x, max_y)
-        grid_size: Number of grid cells per dimension
-        points_per_cell: Max points to sample per cell
-    
-    Returns:
-        Tuple of (sampled_points_list, total_count)
-    """
-    min_x, min_y, max_x, max_y = bounds
-    cell_width = (max_x - min_x) / grid_size
-    cell_height = (max_y - min_y) / grid_size
-    
-    total_points = points_rdd.count()
-    
-    def assign_cell(point):
-        x, y = point
-        cell_x = min(int((x - min_x) / cell_width), grid_size - 1)
-        cell_y = min(int((y - min_y) / cell_height), grid_size - 1)
-        return ((cell_x, cell_y), point)
-    
-    # Group by cell and sample from each
-    sampled = points_rdd \
-        .map(assign_cell) \
-        .groupByKey() \
-        .flatMap(lambda cell_points: list(cell_points[1])[:points_per_cell]) \
-        .collect()
-    
-    print(f"UI Stratified Sampling: {len(sampled)} / {total_points} points "
-          f"(grid: {grid_size}x{grid_size}, {points_per_cell} per cell)")
-    
-    return sampled, total_points
-
-
-# =============================================================================
-# COVERAGE FUNCTIONS (Oracle)
-# =============================================================================
-
-def point_in_circle(point: Point, circle: Circle) -> bool:
-    """Check if a point is inside a circle (Euclidean distance)."""
-    px, py = point
-    cx, cy, r = circle
-    return (px - cx) ** 2 + (py - cy) ** 2 <= r ** 2
-
-
-# The oracle is vectorised with numpy: points are an (n, 2) float array, and a circle test is one
-# array expression instead of a Python loop per point. Same float64 arithmetic, so same answers.
-
-def as_points(points) -> np.ndarray:
-    """Points as an (n, 2) float array (broadcast arrays pass through unchanged)."""
-    return points if isinstance(points, np.ndarray) else np.asarray(points, dtype=float).reshape(-1, 2)
-
-def inside(circle: Circle, pts: np.ndarray) -> np.ndarray:
-    """Boolean mask of the points inside circle."""
-    cx, cy, r = circle
-    return (pts[:, 0] - cx) ** 2 + (pts[:, 1] - cy) ** 2 <= r ** 2
-
-def uncovered_mask(circles: List[Circle], pts: np.ndarray) -> np.ndarray:
-    """Boolean mask of the points not covered by any of circles."""
-    mask = np.ones(len(pts), dtype=bool)
-    for circle in circles:
-        mask &= ~inside(circle, pts)
-    return mask
-
-
-def compute_coverage(circles: List[Circle], points: List[Point]) -> int:
-    """
-    Compute f(S): the number of unique points covered by a set of circles.
-    This is the submodular function we're maximizing.
-    """
-    if not circles:
-        return 0
-
-    pts = as_points(points)
-    return int(len(pts) - np.count_nonzero(uncovered_mask(circles, pts)))
-
-
-def compute_marginal_gain(
-    candidate: Circle,
-    current_set: List[Circle],
-    points: List[Point]
-) -> int:
-    """
-    Compute marginal gain: Δf(c|S) = f(S ∪ {c}) - f(S)
-    This is the number of NEW points covered by adding candidate to current_set.
-    """
-    # Points inside the candidate that no circle of current_set covers yet
-    pts = as_points(points)
-    return int(np.count_nonzero(inside(candidate, pts) & uncovered_mask(current_set, pts)))
-
-
-
-# =============================================================================
-# GREEDY THRESHOLDING ALGORITHM
-# =============================================================================
-
-def evaluate_on_cluster(
-    sc,
-    indexed_circles: List[Tuple[int, Circle]],
-    score,
-    threshold: Optional[float] = None,
-    keep: str = "all"
-) -> Tuple[List[Tuple[int, int, int]], List[dict]]:
-    """
-    Score every candidate circle on the cluster in one Spark job (= one MapReduce round).
-
-    Returns (results, partition_stats):
-      results: (circle_index, score, partition_id) for candidates with score >= threshold
-               (all candidates when threshold is None), in partition order. With keep="first"
-               each partition sends only its first such candidate, with keep="best" only its
-               highest-scoring one (the first, on ties).
-      partition_stats: one dict per partition saying which machine ran it and how much
-               work it did, so the UI can show the work being split across the Pis.
-    """
-    def run_partition(pid, iterator):
-        import time
-        start = time.time()
-        host, ip = machine_identity()
-        kept = []
-        evaluated = 0
-        passed = 0
-        best = 0
-        best_item = None
-        for idx, circle in iterator:
-            value = score(circle)
-            evaluated += 1
-            if best_item is None or value > best:
-                best, best_item = value, (idx, value, pid)
-            if threshold is None or value >= threshold:
-                passed += 1
-                if keep == "all" or (keep == "first" and not kept):
-                    kept.append((idx, value, pid))
-        if keep == "best" and best_item is not None:
-            kept = [best_item]
-        yield ("stats", {
-            "partition": pid,
-            "host": host,
-            "ip": ip,
-            "evaluated": evaluated,
-            "passed": passed,
-            "sent": len(kept),
-            "best": best,
-            "ms": round((time.time() - start) * 1000, 1)
-        })
-        for item in kept:
-            yield ("result", item)
-
-    output = sc.parallelize(indexed_circles) \
-        .mapPartitionsWithIndex(run_partition) \
-        .collect()
-
-    results = [value for kind, value in output if kind == "result"]
-    stats = [value for kind, value in output if kind == "stats"]
-    return results, stats
-
-
-def find_max_single_coverage(
-    circles: List[Circle],
-    points: List[Point],
-    spark: SparkSession
-) -> Tuple[int, int, List[dict]]:
-    """
-    Find the circle with maximum coverage (for establishing f(e)).
-    Returns (circle_index, coverage, partition_stats).
-
-    This is parallelized using PySpark.
-    """
-    sc = spark.sparkContext
-    points_bc = sc.broadcast(np.asarray(points, dtype=float))
-
-    def single_coverage(circle):
-        return int(np.count_nonzero(inside(circle, points_bc.value)))
-
-    # Each partition only needs to send its best circle: the max over those is the overall max.
-    results, stats = evaluate_on_cluster(sc, list(enumerate(circles)), single_coverage, keep="best")
-
-    # Clean up broadcast to free memory
-    points_bc.unpersist()
-
-    # Find maximum
-    best_idx, best_coverage, _ = max(results, key=lambda x: x[1])
-    return best_idx, best_coverage, stats
-
-
-def find_candidate_above_threshold(
-    circles: List[Circle],
-    remaining_indices: Set[int],
-    current_set: List[Circle],
-    points: List[Point],
-    threshold: float,
-    spark: SparkSession
-) -> Tuple[Optional[int], int, Optional[int], List[dict]]:
-    """
-    Find a circle whose marginal gain >= threshold.
-    Returns (index, gain, partition_id, partition_stats) or (None, 0, None, partition_stats).
-
-    This is parallelized using PySpark.
-    """
-    if not remaining_indices:
-        return None, 0, None, []
-
-    sc = spark.sparkContext
-    points_bc = sc.broadcast(np.asarray(points, dtype=float))
-    current_set_bc = sc.broadcast(current_set)
-
-    cache = {}
-    def marginal_gain(circle):
-        # The points S does not cover yet, worked out once per task and reused for every candidate
-        if "uncovered" not in cache:
-            pts = points_bc.value
-            cache["uncovered"] = pts[uncovered_mask(current_set_bc.value, pts)]
-        return int(np.count_nonzero(inside(circle, cache["uncovered"])))
-
-    # Only consider remaining circles
-    candidates = [(i, circles[i]) for i in remaining_indices]
-
-    # Each partition only sends its first candidate >= threshold: the driver takes the first
-    # one in partition order anyway, so the pick is the same and far fewer circles travel.
-    results, stats = evaluate_on_cluster(sc, candidates, marginal_gain, threshold, keep="first")
-
-    # Clean up broadcasts to free memory
-    points_bc.unpersist()
-    current_set_bc.unpersist()
-
-    if not results:
-        return None, 0, None, stats
-
-    # Return the first candidate meeting the threshold
-    idx, gain, partition = results[0]
-    return idx, gain, partition, stats
-
-
-def greedy_threshold_single(
-    circles: List[Circle],
-    points: List[Point],
-    k: int,
-    threshold: float,
-    spark: SparkSession,
-    ui_client: Optional[UIClient] = None
-) -> Tuple[List[Circle], int]:
-    """
-    Single run of greedy thresholding with a fixed threshold τ.
-    Adds circles whose marginal gain >= threshold until |S| = k or no candidates.
-    
-    Returns (selected_circles, total_coverage).
-    """
-    selected = []
-    current_total_coverage = 0
-    
-    remaining = set(range(len(circles)))
-
-    for step in range(k):
-        candidate_idx, gain, partition, stats = find_candidate_above_threshold(
-            circles, remaining, selected, points, threshold, spark
-        )
-
-        if ui_client:
-            ui_client.send_round("threshold", stats, threshold=threshold, step=step + 1,
-                                 found_partition=partition)
-
-        if candidate_idx is None:
-            break  # No more candidates meet threshold
-
-        circle = circles[candidate_idx]
-        selected.append(circle)
-        remaining.remove(candidate_idx)
-        
-        current_total_coverage += gain
-
-        if ui_client:
-            host = next((p["host"] for p in stats if p["partition"] == partition), None)
-            ui_client.send_circle_added(circle, gain, threshold, current_total_coverage, step + 1,
-                                        partition=partition, host=host)
-
-    return selected, current_total_coverage
-
-
-def greedy_with_guesses(
-    circles: List[Circle],
-    points: List[Point],
-    k: int,
-    epsilon: float,
-    spark: SparkSession,
-    ui_client: Optional[UIClient] = None
-) -> Tuple[List[Circle], int, int]:
-    """
-    Main algorithm: tries multiple threshold guesses since OPT is unknown.
-    Returns (best_solution, best_coverage, best_guess_index).
-
-    Guarantees 0.5(1-ε) approximation.
-    """
-    # Step 1: Find the circle with maximum single coverage
-    # This gives us f(e) where f(e) <= OPT <= k * f(e)
-    if ui_client:
-        ui_client.send_status("Calculating max single coverage f(e)...")
-        
-    best_circle_idx, f_e, stats = find_max_single_coverage(circles, points, spark)
-
-    if ui_client:
-        ui_client.send_round("oracle", stats, best=f_e)
-
-    print(f"Max single-circle coverage: {f_e} (circle index {best_circle_idx})")
-
-    if f_e == 0:
-        return [], 0, 0
-
-    # Step 2: Compute number of guesses needed
-    # y = ceil(log(k) / log(1+ε))
-    num_guesses = math.ceil(math.log(k) / math.log(1 + epsilon))
-
-    print(f"Number of guesses: {num_guesses + 1} (j = 0 to {num_guesses})")
-    
-    if ui_client:
-        ui_client.send_status(f"Starting guesses...", total_guesses=num_guesses + 1)
-
-    # Step 3: Try each guess and track best solution
-    best_solution = None
-    best_coverage = 0
-    best_j = 0
-
-    for j in range(num_guesses + 1):
-        # Threshold for this guess: τⱼ = ((1+ε)^j × f(e)) / (2k)
-        threshold = ((1 + epsilon) ** j * f_e) / (2 * k)
-
-        print(f"  Guess j={j}: threshold = {threshold:.2f}")
-
-        if ui_client:
-            ui_client.send_start_guess(j, threshold)
-
-        # Run greedy with this threshold
-        solution, coverage = greedy_threshold_single(circles, points, k, threshold, spark, ui_client)
-
-        print(f"    Selected {len(solution)} circles, coverage = {coverage}")
-
-        if coverage > best_coverage:
-            best_coverage = coverage
-            best_solution = solution
-            best_j = j
-
-        # Early termination if full coverage achieved
-        if best_coverage == len(points):
-            print("  Full coverage achieved - stopping early!")
-            break
-
-    return best_solution, best_coverage, best_j
+    here = os.path.dirname(os.path.abspath(__file__))
+    archive = os.path.join(tempfile.mkdtemp(), "circle_cover.zip")
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name in CODE:
+            path = os.path.join(here, name)
+            if os.path.isfile(path):
+                zf.write(path, name)
+                continue
+            for root, dirs, files in os.walk(path):
+                dirs[:] = [d for d in dirs if d != "__pycache__"]
+                for f in files:
+                    if f.endswith(".py"):
+                        zf.write(os.path.join(root, f), os.path.relpath(os.path.join(root, f), here))
+    sc.addPyFile(archive)
 
 
 # =============================================================================
@@ -578,147 +111,94 @@ def greedy_with_guesses(
 
 def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Circle Cover Problem - Greedy Thresholding")
+    parser = argparse.ArgumentParser(description="Circle Cover Problem")
     parser.add_argument("--cluster", action="store_true", help="Run on Pi cluster instead of local")
     parser.add_argument("--ui-url", type=str, help="URL of the visualization server (e.g., http://localhost:8000)")
     parser.add_argument("--size", type=str, default="small", choices=["small", "medium", "large"],
                         help="Dataset size: small (2K), medium (25K), or large (100K)")
+    parser.add_argument("--algorithm", type=str, choices=["greedy", "theorem8", "alg5"], default="greedy",
+                        help="greedy (threshold greedy), theorem8 (Algorithms 6 + 7) or alg5 (Algorithm 5)")
+    parser.add_argument("--t", type=int, default=2, help="number of thresholds for Algorithm 5")
     args = parser.parse_args()
 
-    # Configuration based on job size
-    SIZE_CONFIGS = {
-        "small": {
-            "N_POINTS": 2000,
-            "N_CIRCLES": 500,
-            "N_CLUSTERS": 8
-        },
-        "medium": {
-            "N_POINTS": 25000,
-            "N_CIRCLES": 2000,
-            "N_CLUSTERS": 20
-        },
-        "large": {
-            "N_POINTS": 100000,
-            "N_CIRCLES": 5000,
-            "N_CLUSTERS": 50
-        }
-    }
-    
     config = SIZE_CONFIGS[args.size]
-    N_POINTS = config["N_POINTS"]
-    N_CIRCLES = config["N_CIRCLES"]
-    N_CLUSTERS = config["N_CLUSTERS"]
-    K = 10  # Max circles to select
-    EPSILON = 0.2
-    BOUNDS = (0, 0, 1000, 1000)
-    RADIUS_RANGE = (30, 100)
-    SEED = 42
 
     print("=" * 60)
-    print("Circle Cover Problem - Greedy Thresholding Algorithm")
+    print(f"Circle Cover Problem - {args.algorithm}")
     print("=" * 60)
     print(f"Mode: {'CLUSTER' if args.cluster else 'LOCAL'}")
     print(f"Dataset Size: {args.size.upper()}")
-    print(f"Points: {N_POINTS} (in {N_CLUSTERS} clusters)")
-    print(f"Circles: {N_CIRCLES} (radius {RADIUS_RANGE[0]}-{RADIUS_RANGE[1]})")
-    print(f"k = {K}, epsilon = {EPSILON}")
-    
-    ui_client = None
+    print(f"Points: {config['N_POINTS']} (in {config['N_CLUSTERS']} clusters)")
+    print(f"Circles: {config['N_CIRCLES']} (radius {RADIUS_RANGE[0]}-{RADIUS_RANGE[1]})")
+    print(f"k = {K}, epsilon = {EPSILON}" + (f", t = {args.t}" if args.algorithm == "alg5" else ""))
+
+    ui = None
     if args.ui_url:
-        ui_client = UIClient(args.ui_url)
+        ui = UIClient(args.ui_url)
         print(f"UI Visualization enabled at {args.ui_url}")
 
     print("=" * 60)
 
-    # Create Spark session
+    # 1. Setup
     print("\nInitializing PySpark...")
-    spark = create_spark_session(cluster_mode=args.cluster)
-    spark.sparkContext.setLogLevel("WARN")
+    # the dashboard finds our job by its name: the threshold greedy runs as "CircleCover", the paper's
+    # MapReduce algorithms as "CircleCoverMR"
+    spark = create_spark_session("CircleCover" if args.algorithm == "greedy" else "CircleCoverMR",
+                                 cluster_mode=args.cluster)
     sc = spark.sparkContext
-    ship_to_workers(sc)  # tasks report which Pi ran them via viz_client
+    sc.setLogLevel("WARN")
+    ship_code_to_workers(sc)
 
-    # Set checkpoint directory for lineage breaking
-    checkpoint_dir = "./checkpoints"
-    sc.setCheckpointDir(checkpoint_dir)
-    print(f"Checkpoint directory: {checkpoint_dir}")
-
-    # Generate data
+    # 2. Data
     print("\nGenerating data...")
-    points = generate_clustered_points(N_POINTS, N_CLUSTERS, BOUNDS, cluster_std=80, seed=SEED)
-    circles = generate_circles(N_CIRCLES, BOUNDS, RADIUS_RANGE, seed=SEED + 1)
-
+    points, circles = generate_dataset(args.size)
     print(f"Generated {len(points)} points and {len(circles)} circles")
-    
-    # Create RDD for distributed processing
-    print("\nSetting up distributed processing...")
-    points_rdd = sc.parallelize(points)
-    
-    # Calculate and apply optimal partitioning
-    # Use fewer partitions in local mode to reduce overhead
-    import multiprocessing
-    num_cores = multiprocessing.cpu_count()
-    optimal_partitions = calculate_partitions(
-        len(points), 
-        cores=16 if args.cluster else num_cores,
-        local_mode=not args.cluster
-    )
-    points_rdd = points_rdd.repartition(optimal_partitions)
-    points_rdd.cache()  # Cache for reuse across iterations
-    
-    print(f"Using {optimal_partitions} partitions for optimal performance")
-    
-    # Sample points for UI visualization (if UI enabled)
-    if ui_client:
-        # Choose sampling strategy based on dataset size
-        if len(points) <= 5000:
-            # Small dataset - send all points
-            display_points = points
-            total_points = None
-            print("UI: Displaying all points")
-        elif len(points) <= 50000:
-            # Medium dataset - uniform sampling
-            display_points, total_points = sample_points_for_ui(
-                points_rdd, max_display=5000
-            )
-        else:
-            # Large dataset - stratified sampling for better distribution
-            display_points, total_points = stratified_sample_for_ui(
-                points_rdd, BOUNDS, grid_size=50, points_per_cell=10
-            )
-        
-        # Calculate total guesses for UI display
-        total_guesses = int(math.ceil(math.log(K) / math.log(1 + EPSILON))) + 1
-        
-        ui_client.send_init(
-            display_points, BOUNDS, 
-            len(display_points), len(circles), K, EPSILON,
-            total_points=total_points,
-            total_guesses=total_guesses,
-            # identifies the input, so the UI only compares runs on the same data
-            dataset=f"{args.size}/seed{SEED}/std80"
-        )
 
-    # Run algorithm
-    print("\nRunning greedy thresholding with logarithmic guesses...")
+    # 3. UI
+    if ui:
+        # the browser draws at most 5000 points; send a uniform sample of larger inputs.
+        shown = points if len(points) <= 5000 else random.Random(0).sample(points, 5000)
+        extra = {}
+        if args.algorithm == "theorem8":
+            guesses = int(math.ceil((1.0 / EPSILON) * math.log(K)))
+        else:
+            # one guess per estimate of OPT, as greedy_with_guesses and algorithm_5_multi_round count them
+            guesses = int(math.ceil(math.log(K) / math.log(1 + EPSILON))) + 1
+            if args.algorithm == "alg5":
+                extra = {"t": args.t}
+        ui.send_init(shown, BOUNDS, len(shown), len(circles), K, EPSILON,
+                     total_points=len(points), total_guesses=guesses, algorithm=args.algorithm,
+                     # identifies the input, so the UI only compares runs on the same data
+                     dataset=f"{args.size}/seed{SEED}/std{CLUSTER_STD}", **extra)
+
+    # 4. Algorithm
+    print(f"\nRunning {args.algorithm}...")
     print("-" * 60)
 
-    started = time.time()
-    solution, coverage, best_j = greedy_with_guesses(circles, points, K, EPSILON, spark, ui_client)
-    elapsed = time.time() - started
+    if args.algorithm == "greedy":
+        started = time.time()
+        sol, cov, best_j = greedy_with_guesses(circles, points, K, EPSILON, spark, ui)
+        elapsed = time.time() - started
+        print(f"  Best guess: j = {best_j}")
+        if ui:
+            # Send the final best solution for visualization
+            ui.send_final_solution(sol, cov, best_j, len(points), elapsed_s=round(elapsed, 1))
+    elif args.algorithm == "alg5":
+        # Algorithms 5 and 6/7 report their own final solution to the UI
+        sol, cov = algorithm_5_multi_round(sc, circles, points, k=K, t=args.t, epsilon=EPSILON,
+                                           seed=ALGORITHM_SEED, cluster_mode=args.cluster, ui=ui)
+    else:
+        sol, cov = theorem_8_combined(sc, circles, points, k=K, epsilon=EPSILON,
+                                      seed=ALGORITHM_SEED, cluster_mode=args.cluster, ui=ui)
 
-    if ui_client:
-        # Send the final best solution for visualization
-        ui_client.send_final_solution(solution, coverage, best_j, len(points), elapsed_s=round(elapsed, 1))
-        ui_client.send_finished()
+    if ui:
+        ui.send_finished()
 
     print("-" * 60)
     print("\nRESULTS:")
-    print(f"  Best guess: j = {best_j}")
-    print(f"  Selected circles: {len(solution)}")
-    print(f"  Points covered: {coverage} / {len(points)} ({100*coverage/len(points):.1f}%)")
+    print(f"  Selected circles: {len(sol)}")
+    print(f"  Points covered: {cov} / {len(points)} ({100*cov/len(points):.1f}%)")
 
-    # Clean up
-    points_rdd.unpersist()
     spark.stop()
     print("\nDone!")
 

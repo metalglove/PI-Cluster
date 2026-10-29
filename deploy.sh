@@ -13,10 +13,9 @@ echo -e "${CYAN}Deploying to Pi Cluster...${NC}"
 echo ""
 
 # Main algorithm
-echo -e "${YELLOW}[1/5] Deploying main.py, alg.py and viz_client.py...${NC}"
-scp main.py pi@raspberrypi:/home/pi/main.py
-scp alg.py pi@raspberrypi:/home/pi/alg.py
-scp viz_client.py pi@raspberrypi:/home/pi/viz_client.py
+echo -e "${YELLOW}[1/5] Deploying main.py, data.py, oracle.py, viz_client.py and algorithms/...${NC}"
+scp main.py data.py oracle.py viz_client.py pi@raspberrypi:/home/pi/
+scp -r algorithms pi@raspberrypi:/home/pi/
 
 # Visualization server
 echo -e "${YELLOW}[2/5] Deploying viz_server.py...${NC}"

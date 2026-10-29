@@ -1,26 +1,21 @@
 """
-Client for the visualization server (viz_server.py), shared by main.py and alg.py.
+Client for the visualization server (viz_server.py), shared by all algorithms.
 
 Besides sending events, it has small helpers that let a Spark job report which machine ran
 each partition and how much work it did, so the UI can show the work being split across the Pis.
-Helpers used inside Spark tasks need this file on the workers: call ship_to_workers(sc) first.
+Helpers used inside Spark tasks need this file on the workers: main.py ships it at start-up.
 """
 
-import os
 import socket
 import time
 from typing import Callable, Iterable, List, Optional, Tuple
+import numpy as np
 
-Point = Tuple[float, float]           # (x, y)
-Circle = Tuple[float, float, float]   # (cx, cy, radius)
+from data import Point, Circle
+from oracle import as_points, inside
 
 # Key of the extra item with_partition_stats() adds to a partition's output.
 STATS_KEY = "__partition_stats__"
-
-
-def ship_to_workers(sc) -> None:
-    """Make this module importable inside Spark tasks (on the Pis it is only on the driver)."""
-    sc.addPyFile(os.path.abspath(__file__))
 
 
 def machine_identity() -> Tuple[str, Optional[str]]:
@@ -86,6 +81,36 @@ def circle_payload(circle: Circle, **extra) -> dict:
     return payload
 
 
+def gains_in_order(G: List[Circle], points: List[Point]) -> List[int]:
+    """Marginal gain of each circle in G when added in order (for the UI's gain chart)."""
+    pts = as_points(points)
+    uncovered = np.ones(len(pts), dtype=bool)
+    gains = []
+    for circle in G:
+        new = inside(circle, pts) & uncovered
+        gains.append(int(np.count_nonzero(new)))
+        uncovered &= ~new
+    return gains
+
+
+def solution_payload(G: List[Circle], from_sample: int, origin: dict) -> List[dict]:
+    """G's circles for the UI: the first from_sample came from the sample S, the rest from round 1."""
+    payload = []
+    for i, c in enumerate(G):
+        if i < from_sample:
+            payload.append(circle_payload(c, source="sample"))
+        else:
+            host, ip = origin.get(c, (None, None))
+            payload.append(circle_payload(c, source="round1", host=host, ip=ip))
+    return payload
+
+
+def central_stats(candidates: int) -> dict:
+    """Round 2 runs on the driver: describe it like a single partition for the UI."""
+    host, ip = machine_identity()
+    return {"partition": "central", "host": host, "ip": ip, "held": candidates, "sent": 0}
+
+
 class UIClient:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip('/')
@@ -132,7 +157,7 @@ class UIClient:
             k: Max circles to select
             epsilon: Epsilon parameter
             total_points: Total points in full dataset (if sampled, otherwise None)
-            algorithm: "greedy" (main.py), "theorem8" or "alg5" (alg.py); picks the UI's pseudocode
+            algorithm: "greedy", "theorem8" or "alg5" (main.py --algorithm); picks the UI's pseudocode
             extra_config: anything else the UI should know about the run (e.g. t for Algorithm 5)
         """
         payload = {

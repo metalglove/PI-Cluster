@@ -212,5 +212,7 @@ Access Web UI: http://192.168.1.223:8080
 ├── spark-4.1.1-bin-hadoop3/ # Actual Spark directory
 ├── spark-env/               # Python virtual environment
 │   └── bin/python
-└── main.py                  # Application script
+├── main.py                  # Application script (start-up)
+├── data.py, oracle.py, viz_client.py
+└── algorithms/              # The algorithms main.py runs
 ```
