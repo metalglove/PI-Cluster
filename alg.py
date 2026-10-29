@@ -459,7 +459,7 @@ def theorem_8_combined(sc: SparkContext, circles: list[Circle], points: list[Poi
 # ALGORITHM 5 (2t + 2 Rounds MapReduce)
 # =============================================================================
 
-def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, t: int, epsilon: float, seed: int = 42, cluster_mode: bool = False):
+def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, t: int, epsilon: float, seed: int = 42, cluster_mode: bool = False, ui: Optional[UIClient] = None):
     """
     Algorithm 5: A 1 - (1 - 1/(t+1))^t approximation in 2t + 2 rounds of MapReduce.
      - Round 0: extra initial round to find the maximum-value element, which estimates OPT within a factor of k
@@ -475,9 +475,21 @@ def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: lis
     # ROUND 0: find the maximum-value element
     # -------------------------------------------------------------------------
     # v_max = max_{e in V} f({e}), which gives v_max <= OPT <= k * v_max.
-    v_max = sc.parallelize(circles, 16 if cluster_mode else 8) \
-        .map(lambda c: compute_coverage([c], points_bc.value)) \
-        .max()
+    started = time.time()
+    if ui:
+        # same job, but each partition also reports its machine (via with_partition_stats).
+        def partition_max(iterator):
+            return [max((compute_coverage([c], points_bc.value) for c in iterator), default=0)]
+        round0 = sc.parallelize(circles, 16 if cluster_mode else 8) \
+            .mapPartitionsWithIndex(with_partition_stats(partition_max, lambda item: [])) \
+            .collect()
+        partition_maxima, round0_stats = split_partition_stats(round0)
+        v_max = max(partition_maxima)
+        ui.send_partition_round("alg5_r0", round0_stats, algo="alg5", round=1, v=v_max)
+    else:
+        v_max = sc.parallelize(circles, 16 if cluster_mode else 8) \
+            .map(lambda c: compute_coverage([c], points_bc.value)) \
+            .max()
 
     # the estimates of OPT are v_max * (1 + epsilon)^g for g = 0, ..., ceil(log_{1+epsilon} k),
     # so that one of them is within a factor of 1 + epsilon of OPT.
@@ -490,6 +502,9 @@ def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: lis
     # G <- empty, for every estimate of OPT.
     solutions = {g: [] for g in range(num_estimates)}
 
+    # UI only: where each chosen circle came from (the sample, or the machine that sent it).
+    source_of = {}
+
     for l in range(1, t + 1):
         # -------------------------------------------------------------------------
         # ROUND 2l - 1: Parallel Filtering
@@ -497,6 +512,9 @@ def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: lis
         # a fresh random partition and sample for every threshold, as per paper.
         circles_rdd, S_bc = algorithm_3_partition_and_sample(sc, circles, k, seed + l, cluster_mode)
         solutions_bc = sc.broadcast(solutions)
+        if ui:
+            ui.send("SAMPLE", {"algo": "alg5", "l": l, "circles": [circle_payload(c) for c in S_bc.value],
+                               "n": len(circles), "v": v_max})
 
         # alpha_l = (1 - 1/(t+1))^l * OPT / k as per paper.
         def alpha(g: int) -> float:
@@ -522,9 +540,20 @@ def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: lis
 
         # we aggregate the result by key (g) to get the union of all Ri for each estimate g across all machines.
         # estimates for which no machine sent any Ri are missing here and get an empty union.
-        aggregated = dict(circles_rdd.mapPartitions(mapper_round) \
+        if ui:
+            round1 = circles_rdd.mapPartitionsWithIndex(with_partition_stats(mapper_round, lambda item: item[1]))
+        else:
+            round1 = circles_rdd.mapPartitions(mapper_round)
+        aggregated = dict(round1 \
             .reduceByKey(add) \
             .collect())
+        round1_stats = aggregated.pop(STATS_KEY, [])
+
+        if ui:
+            origin = ui.send_partition_round("alg5_filter", round1_stats, algo="alg5", round=2 * l, l=l,
+                                             estimates=num_estimates)
+            ui.send_round("alg5_central", [central_stats(len(origin))], algo="alg5", round=2 * l + 1, l=l,
+                          central=True)
 
         # -------------------------------------------------------------------------
         # ROUND 2l: Central Aggregation
@@ -533,10 +562,24 @@ def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: lis
             alpha_l = alpha(g)
 
             # recompute G0 = Greedy(S, G, alpha_l) on the central machine as in the first round.
+            kept = len(solutions[g])
             G0 = threshold_greedy_local(S_bc.value, solutions[g], k, alpha_l, points_bc.value)
 
             # G = Greedy(union of all Ri, G0, alpha_l)
             solutions[g] = threshold_greedy_local(aggregated.get(g, []), G0, k, alpha_l, points_bc.value)
+
+            if ui:
+                for i, c in enumerate(solutions[g]):
+                    if c not in source_of:
+                        source_of[c] = ("sample", None, None) if i < len(G0) else ("round1", *origin.get(c, (None, None)))
+                G = solutions[g]
+                ui.send("GUESS_RESULT", {
+                    "algo": "alg5", "l": l, "j": g, "threshold": alpha_l,
+                    "candidates": len(aggregated.get(g, [])), "kept": kept, "g0": len(G0),
+                    "circles": [circle_payload(c, source=source_of[c][0], host=source_of[c][1], ip=source_of[c][2])
+                                for c in G],
+                    "gains": gains_in_order(G, points_bc.value),
+                    "coverage": compute_coverage(G, points_bc.value)})
 
         print(f"  Threshold l={l}: solution sizes {[len(solutions[g]) for g in range(num_estimates)]}")
 
@@ -545,11 +588,18 @@ def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: lis
     # -------------------------------------------------------------------------
     best_sol = []
     best_cov = 0
+    best_g = 0
     for g in range(num_estimates):
         cov = compute_coverage(solutions[g], points_bc.value)
         if cov > best_cov:
             best_cov = cov
             best_sol = solutions[g]
+            best_g = g
+
+    if ui:
+        ui.send_round("alg5_final", [central_stats(num_estimates)], algo="alg5", round=2 * t + 2, central=True)
+        ui.send_final_solution(best_sol, best_cov, best_g, len(points), algorithm="alg5",
+                               elapsed_s=round(time.time() - started, 1))
 
     # return the best solution and its coverage.
     return best_sol, best_cov
@@ -567,9 +617,6 @@ def main():
     parser.add_argument("--ui-url", type=str, help="URL of the visualization server (e.g., http://localhost:8000)")
     args = parser.parse_args()
     ui = UIClient(args.ui_url) if args.ui_url else None
-    if ui and args.algorithm != "theorem8":
-        print("The UI only knows Theorem 8 so far; running without it.")
-        ui = None
     
     SIZE_CONFIGS = {
         "small": {"N_POINTS": 2000, "N_CIRCLES": 500, "N_CLUSTERS": 8},
@@ -583,7 +630,7 @@ def main():
     sc = spark.sparkContext
     sc.setLogLevel("WARN")
     if ui:
-        ship_to_workers(sc)  # round-1 tasks report which Pi ran them via viz_client
+        ship_to_workers(sc)  # map tasks report which Pi ran them via viz_client
     
     # 2. Data
     print("Generating data...")
@@ -594,13 +641,17 @@ def main():
     if ui:
         # the browser draws at most 5000 points; send a uniform sample of larger inputs.
         shown = points if len(points) <= 5000 else random.Random(0).sample(points, 5000)
+        if args.algorithm == "alg5":
+            # one guess per estimate of OPT, as algorithm_5_multi_round counts them
+            guesses, extra = int(math.ceil(math.log(10) / math.log(1.2))) + 1, {"t": args.t}
+        else:
+            guesses, extra = int(math.ceil((1.0 / 0.2) * math.log(10))), {}
         ui.send_init(shown, (0, 0, 1000, 1000), len(shown), len(circles), 10, 0.2,
-                     total_points=len(points), total_guesses=int(math.ceil((1.0 / 0.2) * math.log(10))),
-                     algorithm="theorem8")
+                     total_points=len(points), total_guesses=guesses, algorithm=args.algorithm, **extra)
 
     # 3. Algorithm
     if args.algorithm == "alg5":
-        sol, cov = algorithm_5_multi_round(sc, circles, points, k=10, t=args.t, epsilon=0.2, seed=56, cluster_mode=args.cluster)
+        sol, cov = algorithm_5_multi_round(sc, circles, points, k=10, t=args.t, epsilon=0.2, seed=56, cluster_mode=args.cluster, ui=ui)
     else:
         sol, cov = theorem_8_combined(sc, circles, points, k=10, epsilon=0.2, seed=56, cluster_mode=args.cluster, ui=ui)
 

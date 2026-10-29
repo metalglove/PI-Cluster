@@ -111,6 +111,10 @@ h2 { font-size: 18px; margin-bottom: 4px; }
 .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 .btn-primary:disabled { background: var(--rule-strong); border-color: var(--rule-strong); color: var(--surface); }
 
+.t-picker { font-size: 13px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
+.t-picker[hidden] { display: none; }
+.t-picker select { font: inherit; border: 1px solid var(--rule-strong); border-radius: 4px; background: var(--surface); color: var(--ink); padding: 4px 6px; }
+
 .theme-toggle { min-width: 64px; }
 
 .conn { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-3); min-width: 110px; }
@@ -315,7 +319,7 @@ html.presenting .side-col { max-height: calc(100vh - 100px); overflow-y: auto; p
 .compare-view[hidden] { display: none; }
 .cv-inner { max-width: 1300px; margin: 0 auto; padding: 22px 24px; }
 .cv-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; }
-.cv-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.cv-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; }
 .cv-col h3 { font-family: var(--serif); font-size: 20px; font-weight: 600; margin: 0 0 8px; }
 .cv-fig { aspect-ratio: 1 / 1; width: 100%; display: block; border: 1px solid var(--rule); border-radius: 6px; }
 .cv-strip { width: 100%; height: 70px; display: block; margin-top: 4px; }

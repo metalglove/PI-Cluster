@@ -120,7 +120,7 @@ class UIClient:
     def send_init(self, points: List[Point], bounds: Tuple[float, float, float, float], 
                   n_points: int, n_circles: int, k: int, epsilon: float,
                   total_points: Optional[int] = None, total_guesses: Optional[int] = None,
-                  algorithm: str = "greedy"):
+                  algorithm: str = "greedy", **extra_config):
         """
         Send initialization data to UI.
         
@@ -132,7 +132,8 @@ class UIClient:
             k: Max circles to select
             epsilon: Epsilon parameter
             total_points: Total points in full dataset (if sampled, otherwise None)
-            algorithm: "greedy" (main.py) or "theorem8" (alg.py); picks the UI's pseudocode
+            algorithm: "greedy" (main.py), "theorem8" or "alg5" (alg.py); picks the UI's pseudocode
+            extra_config: anything else the UI should know about the run (e.g. t for Algorithm 5)
         """
         payload = {
             "points": points,
@@ -141,7 +142,8 @@ class UIClient:
                 "n_circles": n_circles,
                 "k": k,
                 "epsilon": epsilon,
-                "algorithm": algorithm
+                "algorithm": algorithm,
+                **extra_config
             },
             "bounds": {
                 "minX": bounds[0],

@@ -119,7 +119,13 @@ async def run_algorithm(request: Request):
         # Detect environment and build appropriate command
         script_dir = os.path.dirname(os.path.abspath(__file__))
         # greedy: main.py (threshold greedy, many rounds); theorem8: alg.py (Algorithms 6 + 7, two rounds)
-        script = "alg.py" if algorithm == "theorem8" else "main.py"
+        script = "alg.py" if algorithm in ("theorem8", "alg5") else "main.py"
+        try:
+            t = max(1, min(6, int(body.get('t', 2))))   # Algorithm 5's number of thresholds
+        except Exception:
+            t = 2
+        # alg5: Algorithm 5, 2t + 2 rounds
+        extra_args = ["--algorithm", algorithm, "--t", str(t)] if script == "alg.py" else []
         main_py_path = os.path.join(script_dir, script)
         
         # Detect if we're on Pi cluster or local Windows/Mac
@@ -133,7 +139,7 @@ async def run_algorithm(request: Request):
                 "--cluster", 
                 "--ui-url", "http://127.0.0.1:8000",
                 "--size", job_size
-            ]
+            ] + extra_args
             logger.info(f"Running {script} on Pi cluster (cluster mode) with {job_size} dataset")
         else:
             # Local machine: use current python and local mode
@@ -144,7 +150,7 @@ async def run_algorithm(request: Request):
                 # No --cluster flag (runs in local mode)
                 "--ui-url", "http://127.0.0.1:8000",
                 "--size", job_size
-            ]
+            ] + extra_args
             logger.info(f"Running {script} on local machine (local mode) with {job_size} dataset")
         
         logger.info(f"Command: {' '.join(cmd)}")

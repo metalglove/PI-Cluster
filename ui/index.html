@@ -36,9 +36,15 @@
 
         <div class="run-block">
             <div class="segmented" role="radiogroup" aria-label="Algorithm">
-                <label><input type="radio" name="algorithm" value="greedy" checked><span>Threshold greedy</span></label>
-                <label><input type="radio" name="algorithm" value="theorem8"><span>2 rounds (Thm 8)</span></label>
+                <label><input type="radio" name="algorithm" value="greedy" checked><span>Greedy</span></label>
+                <label><input type="radio" name="algorithm" value="theorem8"><span>2 rounds</span></label>
+                <label><input type="radio" name="algorithm" value="alg5"><span>2t + 2 rounds</span></label>
             </div>
+            <label class="t-picker" id="tPicker" hidden>t =
+                <select id="tSelect" aria-label="Number of thresholds t for Algorithm 5">
+                    <option>1</option><option selected>2</option><option>3</option><option>4</option>
+                </select>
+            </label>
             <div class="segmented" role="radiogroup" aria-label="Dataset size">
                 <label><input type="radio" name="jobSize" value="small" checked><span>2K pts</span></label>
                 <label><input type="radio" name="jobSize" value="medium"><span>25K pts</span></label>
@@ -95,8 +101,8 @@
             <div class="card">
                 <div class="now-line" id="nowLine">Waiting for a run.</div>
                 <dl class="stats">
-                    <div><dt>Guess <i>j</i></dt><dd><span id="sGuess">–</span><small id="sGuessTotal"></small></dd></div>
-                    <div><dt>Threshold τ</dt><dd id="sTau">–</dd></div>
+                    <div><dt id="sGuessLabel">Guess j</dt><dd><span id="sGuess">–</span><small id="sGuessTotal"></small></dd></div>
+                    <div><dt id="sTauLabel">Threshold τ</dt><dd id="sTau">–</dd></div>
                     <div><dt id="sSizeLabel">|S| / k</dt><dd><span id="sSize">–</span><small id="sK"></small></dd></div>
                     <div><dt id="sCovLabel">f(S)</dt><dd id="sCov">–</dd></div>
                 </dl>
@@ -161,7 +167,7 @@
         <div class="cv-inner card">
             <div class="cv-head">
                 <div>
-                    <h2>Two ways to cover the same points</h2>
+                    <h2>Same points, different numbers of rounds</h2>
                     <p class="hint" id="cvLede">The latest run of each algorithm.</p>
                 </div>
                 <button class="btn" id="cvClose">Close (Esc)</button>
