@@ -26,6 +26,8 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
         self.recorded_events: List[dict] = []
+        # algorithm -> events of its latest run, for the UI's side-by-side comparison
+        self.runs: dict = {}
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -46,6 +48,8 @@ class ConnectionManager:
     def record_event(self, data: dict):
         if data.get('type') == 'INIT':
             self.recorded_events = []
+            algorithm = (data.get('config') or {}).get('algorithm', 'greedy')
+            self.runs[algorithm] = self.recorded_events   # same list: later events land in both
         self.recorded_events.append(data)
         
     async def replay(self, websocket: WebSocket):
@@ -80,6 +84,11 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
+@app.get("/runs")
+async def get_runs():
+    """Latest run of each algorithm, so the UI can compare them side by side."""
+    return manager.runs
+
 @app.post("/update")
 async def update_event(request: Request):
     """endpoint for the Spark driver to push updates"""
@@ -110,7 +119,13 @@ async def run_algorithm(request: Request):
         # Detect environment and build appropriate command
         script_dir = os.path.dirname(os.path.abspath(__file__))
         # greedy: main.py (threshold greedy, many rounds); theorem8: alg.py (Algorithms 6 + 7, two rounds)
-        script = "alg.py" if algorithm == "theorem8" else "main.py"
+        script = "alg.py" if algorithm in ("theorem8", "alg5") else "main.py"
+        try:
+            t = max(1, min(6, int(body.get('t', 2))))   # Algorithm 5's number of thresholds
+        except Exception:
+            t = 2
+        # alg5: Algorithm 5, 2t + 2 rounds
+        extra_args = ["--algorithm", algorithm, "--t", str(t)] if script == "alg.py" else []
         main_py_path = os.path.join(script_dir, script)
         
         # Detect if we're on Pi cluster or local Windows/Mac
@@ -124,7 +139,7 @@ async def run_algorithm(request: Request):
                 "--cluster", 
                 "--ui-url", "http://127.0.0.1:8000",
                 "--size", job_size
-            ]
+            ] + extra_args
             logger.info(f"Running {script} on Pi cluster (cluster mode) with {job_size} dataset")
         else:
             # Local machine: use current python and local mode
@@ -135,7 +150,7 @@ async def run_algorithm(request: Request):
                 # No --cluster flag (runs in local mode)
                 "--ui-url", "http://127.0.0.1:8000",
                 "--size", job_size
-            ]
+            ] + extra_args
             logger.info(f"Running {script} on local machine (local mode) with {job_size} dataset")
         
         logger.info(f"Command: {' '.join(cmd)}")

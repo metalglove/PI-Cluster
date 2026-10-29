@@ -44,7 +44,8 @@ const ALGORITHMS = {
         title: 'Circle cover, threshold greedy',
         lede: 'Pick <i>k</i> circles that cover as many points as possible. OPT is unknown, so the algorithm ' +
             'tries a ladder of thresholds τ and keeps the best run. Every candidate check is one Spark job, ' +
-            'split across the Raspberry Pis, so the number of rounds grows with <i>k</i>.',
+            'split across the Raspberry Pis, so the number of rounds grows with <i>k</i>. ' +
+            'Guarantee: ½(1 − ε) of OPT.',
         code: [
             { id: 1, text: 'f(e) ← max single-circle coverage', note: '1 Spark job' },
             { id: 2, text: 'y ← ⌈log k / log(1+ε)⌉' },
@@ -64,7 +65,7 @@ const ALGORITHMS = {
         title: 'Circle cover in two MapReduce rounds',
         lede: 'Liu &amp; Vondrák, Theorem 8: Algorithm 6 handles dense inputs and Algorithm 7 sparse ones. ' +
             'Run both and keep the better answer. Each Pi filters its own share of the circles in round 1, ' +
-            'and one central machine finishes in round 2, however large the input.',
+            'and one central machine finishes in round 2, however large the input. Guarantee: ½ − ε of OPT.',
         code: [
             { id: 'h6', head: 'Algorithm 6, dense inputs' },
             { id: 'a1', text: 'S ← sample of V, each circle w.p. 4√(k/n); copy S to every machine' },
@@ -81,9 +82,30 @@ const ALGORITHMS = {
             { id: 'h8', head: 'Theorem 8' },
             { id: 'c1', text: 'return the better of the two answers (2 rounds in total)' }
         ]
+    },
+    alg5: {
+        name: '2t + 2 rounds (Alg 5)',
+        title: 'Circle cover in 2t + 2 MapReduce rounds',
+        lede: 'Liu &amp; Vondrák, Algorithm 5: t thresholds, each costing two rounds (the Pis filter, the central ' +
+            'machine extends every solution), plus one round to estimate OPT and one to pick the best. ' +
+            'More rounds buy a better guarantee: 1 − (1 − 1/(t+1))<sup>t</sup> of OPT, which is ½ for t = 1, ' +
+            '5/9 for t = 2, and tends to 1 − 1/e.',
+        code: [
+            { id: 'd1', text: 'round 1: v ← max<sub>e∈V</sub> f(e); estimates OPT<sub>g</sub> ← v(1+ε)<sup>g</sup>', note: '1 Spark job' },
+            { id: 'd2', text: 'for l = 1 … t:' },
+            { id: 'd3', text: 'round 2l: new sample S; on every machine i, for every g:', indent: 1, note: '1 Spark job' },
+            { id: 'd4', text: 'α<sub>l</sub> ← (1 − 1/(t+1))<sup>l</sup> · OPT<sub>g</sub> / k', indent: 2 },
+            { id: 'd5', text: 'G₀ ← ThresholdGreedy(S, G<sub>g</sub>, α<sub>l</sub>); send R<sub>i</sub> ← ThresholdFilter(V<sub>i</sub>, G₀, α<sub>l</sub>)', indent: 2 },
+            { id: 'd6', text: 'round 2l + 1, central: G<sub>g</sub> ← ThresholdGreedy(∪<sub>i</sub> R<sub>i</sub>, G₀, α<sub>l</sub>)', indent: 1 },
+            { id: 'd7', text: 'round 2t + 2: return the best G<sub>g</sub>' }
+        ]
     }
 };
-const ALGO_LABEL = { alg6: 'Algorithm 6', alg7: 'Algorithm 7' };
+const ALGO_LABEL = { alg6: 'Algorithm 6', alg7: 'Algorithm 7', alg5: 'Algorithm 5' };
+const FIRST_LINE = { greedy: [1], theorem8: ['a1'], alg5: ['d1'] };
+const LAST_LINE = { greedy: [11], theorem8: ['c1'], alg5: ['d7'] };
+// The MapReduce algorithms build one solution G per guess; greedy grows a single S.
+const isMapReduce = a => a !== 'greedy';
 
 // --- State ---
 function emptyState() {
@@ -107,6 +129,8 @@ function emptyState() {
         roundSeq: 0,          // ROUND events so far (a round can span two events)
         lastRound: null,
         machineTotals: {},    // machine key -> candidates scored, all rounds
+        maxLoad: 0,           // most circles one machine handled in one round (MPC: memory per machine)
+        sentTotal: 0,         // circles sent to the driver / central machine (MPC: communication)
         machineNames: {},     // machine key -> {host, ip}
         guesses: [],          // {algo, j, tau, picks, coverage, gains}
         bestGuess: null,
@@ -119,7 +143,7 @@ function emptyState() {
 
 let state = emptyState();
 
-function reduce(s, e) {
+function reduce(s, e, index) {
     switch (e.type) {
         case 'INIT': {
             const fresh = emptyState();
@@ -131,7 +155,8 @@ function reduce(s, e) {
             s.totalGuesses = e.total_guesses || null;
             s.algorithm = e.config.algorithm || 'greedy';
             const total = s.sampling ? s.sampling.total : e.config.n_points;
-            s.lines = s.algorithm === 'theorem8' ? ['a1'] : [1];
+            s.t = e.config.t || null;
+            s.lines = FIRST_LINE[s.algorithm];
             s.now = `${fmt(total)} points and ${fmt(e.config.n_circles)} candidate circles generated. ` +
                 (s.algorithm === 'theorem8' ? 'Algorithm 6 starts by sampling the circles.'
                     : 'First, find the best single circle.');
@@ -141,6 +166,13 @@ function reduce(s, e) {
             s.background = e.circles.map(c => ({ ...c, machine: SAMPLE }));
             s.backgroundNote = 'Faint grey circles: the sample S, copied to every machine.';
             s.fe = e.v;
+            if (e.algo === 'alg5') {
+                s.lines = ['d2', 'd3'];
+                s.circles = []; s.gains = []; s.j = null; s.tau = null; s.coverage = null;
+                s.now = `Threshold l = ${e.l} of ${s.t}: a fresh random sample S of ${fmt(e.circles.length)} ` +
+                    `circles is copied to every machine.`;
+                break;
+            }
             s.lines = ['a1', 'a2'];
             s.now = `Algorithm 6: S is a random sample of ${fmt(e.circles.length)} of the ${fmt(e.n)} circles, ` +
                 `and every machine gets a copy. The best single circle in S covers v = ${fmt(e.v)} points.`;
@@ -155,12 +187,15 @@ function reduce(s, e) {
             // Theorem 8 numbers its rounds (both algorithms share rounds 1 and 2); greedy just counts.
             s.rounds = e.round ? Math.max(s.rounds, e.round) : s.rounds + 1;
             s.roundSeq += 1;
-            s.lastRound = { ...e, number: e.round || s.rounds, seq: s.roundSeq };
+            s.lastRound = { ...e, number: e.round || s.rounds, seq: s.roundSeq, timelineIndex: index };
             for (const p of e.partitions) {
                 const key = machineKey(p);
                 if (!e.central) s.machineTotals[key] = (s.machineTotals[key] || 0) + (p.evaluated ?? p.held);
                 s.machineNames[key] = { host: p.host, ip: p.ip };
             }
+            const cost = roundCost(e);
+            s.maxLoad = Math.max(s.maxLoad, ...Object.values(cost.load));
+            s.sentTotal += cost.sent;
             if (e.kind in TWO_ROUND_TEXT) {
                 if (e.sent_circles) {
                     s.background = e.sent_circles.map(c => ({ ...c, machine: machineKey(c) }));
@@ -209,8 +244,17 @@ function reduce(s, e) {
             }));
             s.gains = e.gains.map((g, i) => ({ step: i + 1, gain: g, tau: e.threshold, machine: s.circles[i].machine }));
             s.coverage = e.coverage;
-            s.guesses.push({ algo: e.algo, j: e.j, tau: e.threshold, picks: e.circles.length,
+            s.guesses.push({ algo: e.algo, l: e.l, j: e.j, tau: e.threshold, picks: e.circles.length,
                              coverage: e.coverage, gains: s.gains });
+            if (e.algo === 'alg5') {
+                const fromSample = e.g0 - e.kept, fromPis = e.circles.length - e.g0;
+                s.lines = ['d6'];
+                s.now = `Round ${2 * e.l + 1}, estimate g = ${e.j} (α = ${fmtTau(e.threshold)}): ` +
+                    `${e.kept} circle${e.kept === 1 ? '' : 's'} kept from earlier thresholds, ` +
+                    `${fromSample} added from the sample and ${fromPis} from what the Pis sent. ` +
+                    `f(G) = ${fmt(e.coverage)}.`;
+                break;
+            }
             const head = `${ALGO_LABEL[e.algo]}, round 2, guess j = ${e.j} (τ = ${fmtTau(e.threshold)})`;
             if (e.algo === 'alg6') {
                 s.lines = ['a7', 'a8'];
@@ -246,6 +290,20 @@ function reduce(s, e) {
             s.circles = e.circles.map((c, i) => ({ ...c, step: i + 1, machine: null, animR: 0 }));
             s.isFinal = true;
             s.background = [];
+            if (s.algorithm === 'alg5') {
+                // Only the solutions after the last threshold count; alg.py picks the first best.
+                const best = s.guesses.find(g => g.algo === 'alg5' && g.l === s.t && g.j === e.best_guess);
+                s.bestAlgo = 'alg5';
+                s.bestGuess = e.best_guess;
+                s.j = e.best_guess;
+                if (best) { s.tau = best.tau; s.gains = best.gains; }
+                s.coverage = e.coverage;
+                s.lines = ['d7'];
+                s.now = `After t = ${s.t} thresholds and ${2 * s.t + 2} rounds, estimate g = ${e.best_guess} is best: ` +
+                    `${e.circles.length} circles cover ${fmt(e.coverage)} of ${fmt(e.total_points)} points ` +
+                    `(${e.coverage_percentage}%).`;
+                break;
+            }
             if (s.algorithm === 'theorem8') {
                 // The winner's best guess: the first one with the highest coverage, as alg.py picks it.
                 const own = s.guesses.filter(g => g.algo === e.algorithm);
@@ -281,13 +339,51 @@ function reduce(s, e) {
 
         case 'FINISHED':
             s.finished = true;
-            s.lines = s.algorithm === 'theorem8' ? ['c1'] : [11];
+            s.lines = LAST_LINE[s.algorithm];
             break;
     }
 }
 
+// The MPC view of one round: circles each machine handled, and circles sent to the driver.
+// Greedy collects every candidate that clears τ (it then takes the first); the oracle round
+// collects every score. Theorem 8's round 1 sends Rᵢ or the top 2k; its round 2 sends nothing.
+function roundCost(e) {
+    const load = {};
+    let sent = 0;
+    for (const p of e.partitions) {
+        const key = machineKey(p);
+        load[key] = (load[key] || 0) + (p.evaluated ?? p.held ?? 0);
+        if (!e.central) sent += p.sent_distinct ?? p.sent ?? p.passed ?? 0;
+    }
+    return { load, sent };
+}
+
 // What the page says for each of Theorem 8's rounds: {lines, now} merged into the state.
 const TWO_ROUND_TEXT = {
+    alg5_r0: e => ({
+        lines: ['d1'],
+        now: `Round 1: every Pi finds its best single circle; the best of those covers v = ${fmt(e.v)}. ` +
+            `OPT lies between v and k·v, so the algorithm keeps one solution per estimate v(1+ε)^g.`
+    }),
+    alg5_filter: e => {
+        const held = e.partitions.reduce((a, p) => a + p.held, 0);
+        const sent = e.sent_circles ? e.sent_circles.length : 0;
+        return {
+            lines: ['d3', 'd4', 'd5'],
+            now: `Round ${e.round}: each Pi takes its share of the ${fmt(held)} circles and, for all ` +
+                `${e.estimates} estimates, keeps those that still clear α_${e.l} after G₀. ` +
+                `${fmt(sent)} distinct circles go to the central machine.`
+        };
+    },
+    alg5_central: e => ({
+        lines: ['d6'],
+        now: `Round ${e.round}: only the central machine (${e.partitions[0].host}) works, extending every ` +
+            `estimate's solution with the ${fmt(e.partitions[0].held)} circles it received:`
+    }),
+    alg5_final: e => ({
+        lines: ['d7'],
+        now: `Round ${e.round}: the central machine compares the ${e.partitions[0].held} solutions and keeps the best.`
+    }),
     alg6_r1: e => {
         const held = e.partitions.reduce((a, p) => a + p.held, 0);
         const sent = e.sent_circles ? e.sent_circles.length : 0;
@@ -338,10 +434,10 @@ function seek(target) {
     target = Math.max(-1, Math.min(timeline.length - 1, target));
     if (target === cursor + 1) {
         cursor = target;
-        reduce(state, timeline[cursor]);   // one step forward: let the new circle grow in
+        reduce(state, timeline[cursor], cursor);   // one step forward: let the new circle grow in
     } else {
         state = emptyState();
-        for (let i = 0; i <= target; i++) reduce(state, timeline[i]);
+        for (let i = 0; i <= target; i++) reduce(state, timeline[i], i);
         state.circles.forEach(c => { c.animR = c.r; });
         cursor = target;
     }
@@ -396,8 +492,9 @@ function rememberRun(final) {
     const rounds = timeline.filter(e => e.type === 'ROUND')
         .reduce((n, e) => e.round ? Math.max(n, e.round) : n + 1, 0);
     const runs = loadRuns();
+    const sent = timeline.filter(e => e.type === 'ROUND').reduce((n, e) => n + roundCost(e).sent, 0);
     runs[algorithm] = {
-        coverage: final.coverage, total: final.total_points, rounds,
+        coverage: final.coverage, total: final.total_points, rounds, sent,
         elapsed: final.elapsed_s ?? null
     };
     try { localStorage.setItem('lastRuns', JSON.stringify(runs)); } catch (e) { /* comparison is optional */ }
@@ -409,7 +506,8 @@ function renderCompare() {
         const r = runs[a];
         const time = r.elapsed !== null ? ` · ${fmt(Math.round(r.elapsed))} s` : '';
         return `<div><b>${ALGORITHMS[a].name}</b><span>${fmt(r.coverage)} / ${fmt(r.total)} pts · ` +
-            `${r.rounds} round${r.rounds === 1 ? '' : 's'}${time}</span></div>`;
+            `${r.rounds} round${r.rounds === 1 ? '' : 's'}` +
+            `${r.sent !== undefined ? ` · ${fmt(r.sent)} sent` : ''}${time}</span></div>`;
     });
     $('compare').innerHTML = rows.length ? `<div>Last runs</div>${rows.join('')}` : '';
 }
@@ -419,6 +517,10 @@ function selectedAlgorithm() {
     return document.querySelector('input[name="algorithm"]:checked').value;
 }
 
+function selectedT() {
+    return Number($('tSelect').value) || 2;
+}
+
 // The algorithm on screen: the loaded run's, else the one picked for the next run.
 function shownAlgorithm() {
     return state.config ? state.algorithm : selectedAlgorithm();
@@ -426,21 +528,33 @@ function shownAlgorithm() {
 
 let renderedCode = null;
 function renderCode(algorithm) {
-    if (renderedCode === algorithm) return;
-    renderedCode = algorithm;
+    // Keep the switch on the algorithm being shown, so the header never contradicts the page.
+    if (state.config) {
+        document.querySelector(`input[name="algorithm"][value="${algorithm}"]`).checked = true;
+        if (state.t) $('tSelect').value = String(state.t);
+        renderTPicker();
+    }
+    const t = state.config ? state.t : selectedT();
+    if (renderedCode === algorithm + t) return;
+    renderedCode = algorithm + t;
     const a = ALGORITHMS[algorithm];
     $('title').textContent = a.title;
     $('lede').innerHTML = a.lede;
-    $('codeTitle').textContent = algorithm === 'theorem8' ? 'Algorithm (Theorem 8)' : 'Algorithm';
+    $('codeTitle').textContent = { greedy: 'Algorithm', theorem8: 'Algorithm (Theorem 8)',
+                                   alg5: `Algorithm 5, t = ${t}` }[algorithm];
     $('code').innerHTML = a.code.map(l => l.head
         ? `<li id="line-${l.id}" class="head">${l.head}</li>`
         : `<li id="line-${l.id}" class="${l.indent ? 'i' + l.indent : ''}">${l.text}` +
           `${l.note ? ` <em>(${l.note})</em>` : ''}</li>`).join('');
-    $('gainHint').innerHTML = algorithm === 'theorem8'
+    $('gainHint').innerHTML = algorithm === 'alg5'
+        ? 'Bar = gain of each circle of G for this estimate, in the order it was added. Grey = from a sample S. Dashed line = α<sub>l</sub>.'
+        : algorithm === 'theorem8'
         ? 'Bar = gain of each circle of G for this guess, in the order it was added. Grey = from G₀ (the sample). Dashed line = τ<sub>j</sub>.'
         : 'Bar = Δ<i>f</i>(c | S) of the circle added at that step. Dashed line = τ. A circle is taken only if its gain clears τ.';
-    $('sSizeLabel').textContent = algorithm === 'theorem8' ? '|G| / k' : '|S| / k';
-    $('sCovLabel').textContent = algorithm === 'theorem8' ? 'f(G)' : 'f(S)';
+    $('sSizeLabel').textContent = isMapReduce(algorithm) ? '|G| / k' : '|S| / k';
+    $('sCovLabel').textContent = isMapReduce(algorithm) ? 'f(G)' : 'f(S)';
+    $('sGuessLabel').textContent = algorithm === 'alg5' ? 'Estimate g' : 'Guess j';
+    $('sTauLabel').textContent = algorithm === 'alg5' ? 'Threshold α' : 'Threshold τ';
 }
 
 function renderPanels() {
@@ -449,11 +563,11 @@ function renderPanels() {
     $('emptyNote').hidden = s.points.length > 0;
     $('nowLine').textContent = s.now;
 
-    const firstJ = s.algorithm === 'theorem8' ? 1 : 0;
+    const firstJ = s.algorithm === 'theorem8' ? 1 : 0;   // alg.py numbers Theorem 8's guesses from 1
     $('sGuess').textContent = s.j === null ? '–' : s.j;
     $('sGuessTotal').textContent = s.totalGuesses ? ` of ${firstJ}…${firstJ + s.totalGuesses - 1}` : '';
     $('sTau').textContent = fmtTau(s.tau);
-    $('sSize').textContent = s.config && (s.algorithm !== 'theorem8' || s.j !== null) ? s.circles.length : '–';
+    $('sSize').textContent = s.config && (!isMapReduce(s.algorithm) || s.j !== null) ? s.circles.length : '–';
     $('sK').textContent = s.config ? ` / ${s.config.k}` : '';
     $('sCov').textContent = fmt(s.coverage);
 
@@ -477,13 +591,14 @@ function renderGuesses() {
     const max = Math.max(1, ...s.guesses.map(g => g.coverage));
     box.innerHTML = s.guesses.map((g, i) => {
         const cls = ['g-row'];
-        if (s.isFinal && g.algo === s.bestAlgo && g.j === s.bestGuess) cls.push('best');
+        if (s.isFinal && g.algo === s.bestAlgo && g.j === s.bestGuess && (g.algo !== 'alg5' || g.l === s.t)) cls.push('best');
         else if (!s.isFinal && i === s.guesses.length - 1) cls.push('current');
-        const head = g.algo !== 'greedy' && (i === 0 || s.guesses[i - 1].algo !== g.algo)
-            ? `<div class="g-head">${ALGO_LABEL[g.algo]}</div>` : '';
+        const group = x => x.algo === 'alg5' ? `Threshold l = ${x.l}` : ALGO_LABEL[x.algo];
+        const head = g.algo !== 'greedy' && (i === 0 || group(s.guesses[i - 1]) !== group(g))
+            ? `<div class="g-head">${group(g)}</div>` : '';
         return `${head}<div class="${cls.join(' ')}">
-            <span>j=${g.j}</span>
-            <span>τ=${fmtTau(g.tau)}</span>
+            <span>${g.algo === 'alg5' ? 'g' : 'j'}=${g.j}</span>
+            <span>${g.algo === 'alg5' ? 'α' : 'τ'}=${fmtTau(g.tau)}</span>
             <span class="g-bar" title="${g.picks} circles"><i style="width:${100 * g.coverage / max}%"></i></span>
             <span class="g-cov">${fmt(g.coverage)}</span>
         </div>`;
@@ -507,8 +622,13 @@ function renderCluster() {
     const keys = machineList();
     const round = s.lastRound;
     $('roundCount').textContent = s.rounds;
-    $('roundLabel').textContent = shownAlgorithm() === 'theorem8'
-        ? 'MapReduce rounds (Algorithms 6 and 7 share them)' : 'rounds (Spark jobs) so far';
+    $('roundLabel').textContent = {
+        greedy: 'one Spark job per pick, about k·log k / ε',
+        theorem8: 'Algorithms 6 and 7 share them',
+        alg5: `2t + 2 = ${2 * (s.t || selectedT()) + 2} for t = ${s.t || selectedT()}`
+    }[shownAlgorithm()];
+    $('maxLoad').textContent = s.maxLoad ? fmt(s.maxLoad) : '–';
+    $('sentTotal').textContent = s.rounds ? fmt(s.sentTotal) : '–';
 
     if (round) {
         const what = {
@@ -517,13 +637,17 @@ function renderCluster() {
             alg6_r1: () => `Algorithm 6 has every Pi filter its own circles against all ${round.guesses} guesses`,
             alg6_r2: () => 'Algorithm 6 finishes on the central machine alone',
             alg7_r1: () => `Algorithm 7 has every Pi send its ${round.top} circles with the largest f(e)`,
-            alg7_r2: () => 'Algorithm 7 finishes on the central machine alone'
+            alg7_r2: () => 'Algorithm 7 finishes on the central machine alone',
+            alg5_r0: () => 'every Pi scores its circles on their own to estimate OPT',
+            alg5_filter: () => `threshold l = ${round.l}: every Pi filters its circles for all ${round.estimates} estimates`,
+            alg5_central: () => `threshold l = ${round.l}: the central machine extends every solution`,
+            alg5_final: () => 'the central machine keeps the best solution'
         }[round.kind]();
         const times = round.partitions.map(p => p.ms).filter(ms => ms !== undefined);
         const slowest = times.length ? ` Slowest partition took ${fmt(Math.round(Math.max(...times)))} ms.` : '';
         $('roundHint').textContent = `Round ${round.number}: ${what}.${slowest}`;
     } else {
-        $('roundHint').textContent = shownAlgorithm() === 'theorem8'
+        $('roundHint').textContent = isMapReduce(shownAlgorithm())
             ? 'In round 1 every Pi works on its own share of the circles at the same time. ' +
               'In round 2 a single central machine combines what they sent.'
             : 'Each round, Spark splits the remaining candidate circles into partitions ' +
@@ -534,7 +658,7 @@ function renderCluster() {
     $('share').innerHTML = total ? keys.filter(k => s.machineTotals[k]).map(k =>
         `<i style="--c:${colorFor(k)}; flex-grow:${s.machineTotals[k]}"></i>`).join('') : '';
     $('shareCaption').innerHTML = total
-        ? (s.algorithm === 'theorem8' ? 'Share of the circles each Pi worked on in round 1: '
+        ? (isMapReduce(s.algorithm) ? 'Share of the circles each Pi worked on in the parallel rounds: '
             : 'Share of all circle checks so far: ') + keys.filter(k => s.machineTotals[k]).map(k =>
             `${machineLabel(k)} <b>${Math.round(100 * s.machineTotals[k] / total)}%</b>`).join(', ')
         : '';
@@ -608,13 +732,14 @@ function machineLabel(key) {
 
 function renderLegend() {
     const s = state;
-    const two = s.algorithm === 'theorem8';
+    const two = isMapReduce(s.algorithm);
     const keys = [...new Set([...s.circles, ...s.background].map(c => c.machine).filter(Boolean))];
     let html = keys.map(k => `<span><i class="swatch" style="--c:${colorFor(k)}"></i>` +
         (k === SAMPLE ? 'from the sample S' : `${two ? 'sent by' : 'found by'} ${machineLabel(k)}`) + '</span>').join('');
     if (s.isFinal) html = `<span><i class="swatch" style="--c:${C.ink}"></i>best solution</span>`;
     $('legend').innerHTML = html;
-    const winner = two ? `${ALGO_LABEL[s.bestAlgo]}, guess j = ${s.bestGuess}` : `guess j = ${s.bestGuess}`;
+    const winner = s.algorithm === 'alg5' ? `estimate g = ${s.bestGuess}`
+        : two ? `${ALGO_LABEL[s.bestAlgo]}, guess j = ${s.bestGuess}` : `guess j = ${s.bestGuess}`;
     $('caption').textContent = s.isFinal
         ? `Final answer from ${winner}. Covered points are drawn stronger.`
         : two
@@ -636,7 +761,55 @@ function renderPlayback() {
     $('pbStart').disabled = cursor < 0;
     $('pbFwd').disabled = cursor >= n - 1;
     $('pbEnd').disabled = cursor >= n - 1;
+    drawRoundStrip();
+    renderChapters();
 }
+
+// --- Chapters: the moments worth stopping at in a lecture ---
+function chapterLabel(e) {
+    switch (e.type) {
+        case 'SAMPLE': return e.algo === 'alg5' ? null : 'Sample S';
+        case 'START_GUESS': return `j = ${e.value}`;
+        case 'FINAL_SOLUTION': return 'Result';
+        case 'ROUND':
+            return {
+                oracle: 'f(e)', alg6_r1: 'Alg 6 · round 1', alg6_r2: 'Alg 6 · round 2',
+                alg7_r1: 'Alg 7 · round 1', alg7_r2: 'Alg 7 · round 2',
+                alg5_r0: 'Round 1 · v', alg5_filter: `Round ${e.round} · l = ${e.l}`,
+                alg5_central: `Round ${e.round} · central`, alg5_final: `Round ${e.round} · best`
+            }[e.kind] || null;
+    }
+    return null;
+}
+
+function chapterList() {
+    return timeline.map((e, i) => ({ i, label: chapterLabel(e) })).filter(c => c.label);
+}
+
+let renderedChapters = '';
+function renderChapters() {
+    const list = chapterList();
+    const key = list.map(c => c.i).join(',') + '|' + cursor;
+    if (key === renderedChapters) return;
+    renderedChapters = key;
+    const current = list.filter(c => c.i <= cursor).pop();
+    $('chapters').innerHTML = list.map(c =>
+        `<button data-i="${c.i}" class="${current && c.i === current.i ? 'on' : ''}">${c.label}</button>`).join('');
+    const span = Math.max(1, timeline.length - 1);
+    $('chapterTicks').innerHTML = list.map(c => `<i style="left:${100 * c.i / span}%"></i>`).join('');
+}
+
+function jumpChapter(dir) {
+    const list = chapterList();
+    const target = dir > 0 ? list.find(c => c.i > cursor) : list.filter(c => c.i < cursor).pop();
+    setPlaying(false);
+    seek(target ? target.i : (dir > 0 ? timeline.length - 1 : -1));
+}
+
+$('chapters').addEventListener('click', e => {
+    const b = e.target.closest('button[data-i]');
+    if (b) { setPlaying(false); seek(Number(b.dataset.i)); }
+});
 
 // --- Rendering: canvases ---
 function setupCanvas(canvas) {
@@ -710,7 +883,7 @@ function drawFigure() {
     s.circles.forEach((c, i) => {
         if (c.animR < c.r) c.animR = Math.abs(c.r - c.animR) < 0.5 ? c.r : c.animR + (c.r - c.animR) * 0.12;
         const color = c.machine ? colorFor(c.machine) : C.ink;
-        const newest = !s.isFinal && s.algorithm !== 'theorem8' && i === s.circles.length - 1;
+        const newest = !s.isFinal && !isMapReduce(s.algorithm) && i === s.circles.length - 1;
         ctx.beginPath();
         ctx.arc(X(c.cx), Y(c.cy), c.animR * scale, 0, Math.PI * 2);
         ctx.fillStyle = hexAlpha(color, s.isFinal ? 0.07 : 0.1);
@@ -813,6 +986,100 @@ function niceStep(raw) {
     return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
 }
 
+// --- Round strip: one column per Spark job / round, stacked by machine ---
+// Built from the whole timeline so the layout stays put while stepping; rounds after the
+// playhead are drawn as outlines, so the class sees how many are still to come.
+const stripCanvas = $('roundStrip');
+let stripColumns = [];   // [{x, w, index}] for click-to-seek
+
+function drawRoundStrip() {
+    stripColumns = drawStrip(stripCanvas, timeline, cursor, { mark: state.lastRound?.timelineIndex });
+}
+
+// Draws events' rounds on canvas; rounds after index `upto` as outlines. With `slots`, every
+// column gets the width of 1/slots of the canvas, so two strips can share one scale.
+function drawStrip(canvas, events, upto, { mark = null, slots = null } = {}) {
+    const { ctx, w, h } = setupCanvas(canvas);
+    ctx.clearRect(0, 0, w, h);
+    const rounds = [];
+    let guess = null;
+    events.forEach((e, i) => {
+        if (e.type === 'START_GUESS') guess = e.value;
+        if (e.type === 'ROUND') rounds.push({ e, i, guess, cost: roundCost(e) });
+    });
+    const columns = [];
+    if (!rounds.length) {
+        ctx.fillStyle = C.muted;
+        ctx.font = '13px "IBM Plex Sans", sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Each round of the run will appear here as a column.', 0, h / 2);
+        return columns;
+    }
+    const two = rounds.some(r => r.e.round);
+    const labelH = 18;
+    const top = 6, base = h - labelH;
+    const n = slots || rounds.length;
+    const gap = n > 60 ? 1 : 4;
+    const colW = Math.max(2, Math.min(slots ? Infinity : (two ? 90 : 26), (w - gap * (n - 1)) / n));
+    const maxTotal = Math.max(1, ...rounds.map(r => Object.values(r.cost.load).reduce((a, b) => a + b, 0)));
+    const Y = v => (v / maxTotal) * (base - top);
+
+    ctx.font = '11px "IBM Plex Mono", monospace';
+    ctx.textBaseline = 'top';
+    let lastGuess = undefined;
+    let lastLabelX = -Infinity;
+    rounds.forEach((r, k) => {
+        const x = k * (colW + gap);
+        const done = r.i <= upto;
+        columns.push({ x, w: colW + gap, index: r.i });
+        let y = base;
+        Object.entries(r.cost.load).forEach(([key, v]) => {
+            const hgt = Math.max(1, Y(v));
+            y -= hgt;
+            const color = colorFor(key);
+            if (r.e.central) {
+                ctx.setLineDash([3, 2]);
+                ctx.strokeStyle = done ? color : hexAlpha(color, 0.35);
+                ctx.strokeRect(x + 0.5, y + 0.5, colW - 1, hgt - 1);
+                ctx.setLineDash([]);
+            } else if (done) {
+                ctx.fillStyle = color;
+                ctx.fillRect(x, y, colW, hgt);
+            } else {
+                ctx.strokeStyle = hexAlpha(color, 0.35);
+                ctx.strokeRect(x + 0.5, y + 0.5, colW - 1, hgt - 1);
+            }
+        });
+        if (r.i === mark) {
+            ctx.fillStyle = C.ink;
+            ctx.fillRect(x, base + 2, colW, 2);
+        }
+        // Labels: Theorem 8 names each round; greedy marks where each guess starts.
+        ctx.fillStyle = C.muted;
+        if (two) {
+            ctx.textAlign = 'center';
+            const label = r.e.algo === 'alg5' ? `R${r.e.round}` : `${r.e.algo === 'alg6' ? 'Alg 6' : 'Alg 7'} · R${r.e.round}`;
+            if (colW > 8 * label.length) ctx.fillText(label, x + colW / 2, base + 5);
+        } else if (r.guess !== lastGuess && r.guess !== null && r.guess !== undefined) {
+            ctx.textAlign = 'left';
+            ctx.fillRect(x, base + 2, 1, 6);
+            if (x - lastLabelX > 38) {
+                ctx.fillText(`j=${r.guess}`, x + 2, base + 5);
+                lastLabelX = x;
+            }
+        }
+        lastGuess = r.guess;
+    });
+    return columns;
+}
+
+stripCanvas.addEventListener('click', ev => {
+    const x = ev.clientX - stripCanvas.getBoundingClientRect().left;
+    const col = stripColumns.find(c => x >= c.x && x < c.x + c.w);
+    if (col) { setPlaying(false); seek(col.index); }
+});
+window.addEventListener('resize', drawRoundStrip);
+
 function frame() {
     drawFigure();
     requestAnimationFrame(frame);
@@ -833,12 +1100,130 @@ $('pbSpeed').addEventListener('change', schedule);
 
 // Keep focus off buttons so space and the arrow keys always drive playback.
 document.querySelectorAll('button').forEach(b => b.addEventListener('mouseup', () => b.blur()));
+// Keys: space play/pause, ← → step, [ ] or PageUp/PageDown (presentation clickers) jump a
+// chapter, P present, C compare, Esc close.
 document.addEventListener('keydown', e => {
     if (e.target.closest('input, select')) return;
+    if (e.key === 'Escape') { setPresenting(false); showCompare(false); return; }
     if (e.key === ' ') { e.preventDefault(); $('pbPlay').click(); }
     else if (e.key === 'ArrowRight') $('pbFwd').click();
     else if (e.key === 'ArrowLeft') $('pbBack').click();
+    else if (e.key === ']' || e.key === 'PageDown') { e.preventDefault(); jumpChapter(1); }
+    else if (e.key === '[' || e.key === 'PageUp') { e.preventDefault(); jumpChapter(-1); }
+    else if (e.key === 'p' || e.key === 'P') setPresenting(!document.documentElement.classList.contains('presenting'));
+    else if (e.key === 'c' || e.key === 'C') showCompare($('compareView').hidden);
 });
+
+// --- Presenter mode ---
+function setPresenting(on) {
+    document.documentElement.classList.toggle('presenting', on);
+    try {
+        if (on && !document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+        if (!on && document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    } catch (e) { /* fullscreen is optional */ }
+    requestAnimationFrame(renderPanels);   // canvases resize with the layout
+}
+$('presentBtn').addEventListener('click', () => setPresenting(true));
+$('exitPresent').addEventListener('click', () => setPresenting(false));
+document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement) setPresenting(false);
+});
+
+// --- Side-by-side comparison of the latest run of each algorithm ---
+function summarizeRun(events) {
+    const init = events.find(e => e.type === 'INIT');
+    const final = events.find(e => e.type === 'FINAL_SOLUTION');
+    if (!init || !final) return null;
+    const rounds = events.filter(e => e.type === 'ROUND');
+    return {
+        events, init, final,
+        rounds: rounds.reduce((n, e) => e.round ? Math.max(n, e.round) : n + 1, 0),
+        jobs: rounds.filter(e => !e.central).length,
+        sent: rounds.reduce((n, e) => n + roundCost(e).sent, 0),
+        maxLoad: Math.max(0, ...rounds.map(e => Math.max(...Object.values(roundCost(e).load))))
+    };
+}
+
+function drawMiniFigure(canvas, run) {
+    const { ctx, w, h } = setupCanvas(canvas);
+    ctx.clearRect(0, 0, w, h);
+    const b = run.init.bounds, circles = run.final.circles;
+    const pad = 110;   // room for circles near the edge
+    const scale = Math.min(w / (b.maxX - b.minX + 2 * pad), h / (b.maxY - b.minY + 2 * pad));
+    const X = x => (w - (b.maxX - b.minX) * scale) / 2 + (x - b.minX) * scale;
+    const Y = y => (h - (b.maxY - b.minY) * scale) / 2 + (y - b.minY) * scale;
+    for (const [x, y] of run.init.points) {
+        const covered = circles.some(c => (x - c.cx) ** 2 + (y - c.cy) ** 2 <= c.r * c.r);
+        ctx.fillStyle = covered ? C.pointCovered : C.point;
+        ctx.fillRect(X(x) - 1, Y(y) - 1, 2, 2);
+    }
+    ctx.strokeStyle = C.ink;
+    ctx.lineWidth = 1.6;
+    for (const c of circles) {
+        ctx.beginPath();
+        ctx.arc(X(c.cx), Y(c.cy), c.r * scale, 0, Math.PI * 2);
+        ctx.fillStyle = hexAlpha(C.ink, 0.06);
+        ctx.fill();
+        ctx.stroke();
+    }
+}
+
+async function showCompare(on) {
+    $('compareView').hidden = !on;
+    if (!on) return;
+    let runs = {};
+    try { runs = await (await fetch('/runs')).json(); } catch (e) { /* shown as missing below */ }
+    const summaries = Object.fromEntries(Object.keys(ALGORITHMS).map(a => [a, runs[a] ? summarizeRun(runs[a]) : null]));
+    const slots = Math.max(1, ...Object.values(summaries).filter(Boolean)
+        .map(r => r.events.filter(e => e.type === 'ROUND').length));
+
+    $('cvCols').innerHTML = Object.keys(ALGORITHMS).map(a => {
+        const r = summaries[a];
+        if (!r) {
+            return `<div class="cv-col"><h3>${ALGORITHMS[a].title}</h3>
+                <p class="cv-empty">No finished run yet. Pick “${ALGORITHMS[a].name}” and press Run on cluster.</p></div>`;
+        }
+        const pct = r.final.coverage_percentage;
+        const time = r.final.elapsed_s != null ? `${fmt(Math.round(r.final.elapsed_s))} s` : '–';
+        return `<div class="cv-col">
+            <h3>${ALGORITHMS[a].title}</h3>
+            <canvas class="cv-fig" id="cvFig-${a}"></canvas>
+            <dl>
+                <div><dt>Points covered</dt><dd>${fmt(r.final.coverage)} <small>(${pct}%)</small></dd></div>
+                <div><dt>Rounds</dt><dd>${fmt(r.rounds)}</dd></div>
+                <div><dt>Wall time</dt><dd>${time}</dd></div>
+                <div><dt>Spark jobs</dt><dd>${fmt(r.jobs)}</dd></div>
+                <div><dt>Sent to driver</dt><dd>${fmt(r.sent)}</dd></div>
+                <div><dt>Most on one machine</dt><dd>${fmt(r.maxLoad)}</dd></div>
+            </dl>
+            <canvas class="cv-strip" id="cvStrip-${a}"></canvas>
+        </div>`;
+    }).join('');
+
+    // Like-for-like only if all runs drew the same points (same size, same generator).
+    const done = Object.keys(ALGORITHMS).filter(a => summaries[a]);
+    const sig = r => JSON.stringify([r.final.total_points, r.init.config.n_circles, r.init.points.slice(0, 50)]);
+    const same = done.every(a => sig(summaries[a]) === sig(summaries[done[0]]));
+    $('cvLede').textContent = !done.length
+        ? 'No finished runs yet.'
+        : !same
+        ? 'These runs used different inputs, so they are not comparable. Run them on the same dataset size.'
+        : `Same input: ${fmt(summaries[done[0]].final.total_points)} points and ` +
+          `${fmt(summaries[done[0]].init.config.n_circles)} candidate circles. ` +
+          done.map(a => `${ALGORITHMS[a].name}: ${fmt(summaries[a].final.coverage)} points in ` +
+              `${fmt(summaries[a].rounds)} rounds`).join('; ') +
+          '. All strips use the same scale: one column per round.';
+
+    for (const a of Object.keys(ALGORITHMS)) {
+        const r = summaries[a];
+        if (!r) continue;
+        drawMiniFigure($(`cvFig-${a}`), r);
+        drawStrip($(`cvStrip-${a}`), r.events, r.events.length, { slots });
+    }
+}
+$('compareBtn').addEventListener('click', () => showCompare(true));
+$('cvClose').addEventListener('click', () => showCompare(false));
+$('compareView').addEventListener('click', e => { if (e.target === $('compareView')) showCompare(false); });
 
 // --- Theme ---
 function renderThemeButton() {
@@ -882,7 +1267,7 @@ $('runBtn').addEventListener('click', async () => {
         const res = await fetch('/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ size, algorithm: selectedAlgorithm() })
+            body: JSON.stringify({ size, algorithm: selectedAlgorithm(), t: selectedT() })
         });
         const data = await res.json();
         if (data.status !== 'started') console.error('Run failed', data);
@@ -933,10 +1318,16 @@ async function pollCluster() {
     renderRunButton();
 }
 
+function renderTPicker() {
+    $('tPicker').hidden = selectedAlgorithm() !== 'alg5';
+}
 document.querySelectorAll('input[name="algorithm"]').forEach(r => r.addEventListener('change', () => {
+    renderTPicker();
     // Only retitle the page when no run is loaded; a loaded run keeps its own algorithm.
     if (!state.config) renderPanels();
 }));
+$('tSelect').addEventListener('change', () => { if (!state.config) renderPanels(); });
+renderTPicker();
 
 renderPanels();
 renderCompare();

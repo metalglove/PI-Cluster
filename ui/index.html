@@ -36,15 +36,23 @@
 
         <div class="run-block">
             <div class="segmented" role="radiogroup" aria-label="Algorithm">
-                <label><input type="radio" name="algorithm" value="greedy" checked><span>Threshold greedy</span></label>
-                <label><input type="radio" name="algorithm" value="theorem8"><span>2 rounds (Thm 8)</span></label>
+                <label><input type="radio" name="algorithm" value="greedy" checked><span>Greedy</span></label>
+                <label><input type="radio" name="algorithm" value="theorem8"><span>2 rounds</span></label>
+                <label><input type="radio" name="algorithm" value="alg5"><span>2t + 2 rounds</span></label>
             </div>
+            <label class="t-picker" id="tPicker" hidden>t =
+                <select id="tSelect" aria-label="Number of thresholds t for Algorithm 5">
+                    <option>1</option><option selected>2</option><option>3</option><option>4</option>
+                </select>
+            </label>
             <div class="segmented" role="radiogroup" aria-label="Dataset size">
                 <label><input type="radio" name="jobSize" value="small" checked><span>2K pts</span></label>
                 <label><input type="radio" name="jobSize" value="medium"><span>25K pts</span></label>
                 <label><input type="radio" name="jobSize" value="large"><span>100K pts</span></label>
             </div>
             <button id="runBtn" class="btn btn-primary">Run on cluster</button>
+            <button id="compareBtn" class="btn">Compare</button>
+            <button id="presentBtn" class="btn" title="Full screen, larger text (P)">Present</button>
             <button id="themeBtn" class="btn theme-toggle" aria-label="Toggle dark mode">Dark</button>
             <div class="conn"><span class="dot" id="connDot"></span><span id="connText">Connecting</span></div>
         </div>
@@ -71,7 +79,10 @@
                     <button class="btn icon" id="pbFwd" title="Next event (→)" aria-label="Next event">Step ▶</button>
                     <button class="btn icon" id="pbEnd" title="Jump to latest" aria-label="Jump to latest">⏭</button>
                 </div>
-                <input type="range" id="pbScrub" min="0" max="0" value="0" aria-label="Timeline">
+                <div class="scrub">
+                    <input type="range" id="pbScrub" min="0" max="0" value="0" aria-label="Timeline">
+                    <div class="ticks" id="chapterTicks" aria-hidden="true"></div>
+                </div>
                 <div class="pb-meta">
                     <span id="pbLabel">0 / 0</span>
                     <select id="pbSpeed" aria-label="Playback speed">
@@ -82,6 +93,7 @@
                         <option value="16">16×</option>
                     </select>
                 </div>
+                <nav class="chapters" id="chapters" aria-label="Chapters"></nav>
             </div>
         </section>
 
@@ -89,8 +101,8 @@
             <div class="card">
                 <div class="now-line" id="nowLine">Waiting for a run.</div>
                 <dl class="stats">
-                    <div><dt>Guess <i>j</i></dt><dd><span id="sGuess">–</span><small id="sGuessTotal"></small></dd></div>
-                    <div><dt>Threshold τ</dt><dd id="sTau">–</dd></div>
+                    <div><dt id="sGuessLabel">Guess j</dt><dd><span id="sGuess">–</span><small id="sGuessTotal"></small></dd></div>
+                    <div><dt id="sTauLabel">Threshold τ</dt><dd id="sTau">–</dd></div>
                     <div><dt id="sSizeLabel">|S| / k</dt><dd><span id="sSize">–</span><small id="sK"></small></dd></div>
                     <div><dt id="sCovLabel">f(S)</dt><dd id="sCov">–</dd></div>
                 </dl>
@@ -108,7 +120,7 @@
                 <ol class="code" id="code"></ol>
             </div>
 
-            <div class="card">
+            <div class="card guesses-card">
                 <h2>Guesses</h2>
                 <div class="guesses" id="guesses"><p class="hint">One row per threshold tried.</p></div>
             </div>
@@ -120,17 +132,49 @@
                     <h2>Work on the cluster</h2>
                     <p class="hint" id="roundHint">Each round, Spark splits the remaining candidate circles into partitions and the Pis score them at the same time.</p>
                 </div>
-                <div class="round-count">
-                    <span class="big" id="roundCount">0</span>
-                    <span id="roundLabel">rounds (Spark jobs) so far</span>
-                </div>
             </div>
+
+            <dl class="ledger">
+                <div>
+                    <dt>Rounds</dt>
+                    <dd id="roundCount">0</dd>
+                    <small id="roundLabel"></small>
+                </div>
+                <div>
+                    <dt>Most circles on one machine in a round</dt>
+                    <dd id="maxLoad">–</dd>
+                    <small>memory per machine</small>
+                </div>
+                <div>
+                    <dt>Circles sent to the driver</dt>
+                    <dd id="sentTotal">–</dd>
+                    <small>communication</small>
+                </div>
+            </dl>
+
+            <div class="strip-wrap"><canvas id="roundStrip" aria-label="Rounds of this run; click one to jump to it"></canvas></div>
+            <p class="hint strip-caption">Every round of this run, stacked by machine. Solid = done, outline = still to come, dashed = runs on the central machine only. Click a round to jump to it.</p>
 
             <div class="share" id="share" aria-label="Share of all candidate checks per Pi"></div>
             <div class="share-caption" id="shareCaption"></div>
             <div class="lanes" id="lanes"></div>
         </section>
     </main>
+
+    <button class="btn exit-present" id="exitPresent">Exit (Esc)</button>
+
+    <div class="compare-view" id="compareView" hidden>
+        <div class="cv-inner card">
+            <div class="cv-head">
+                <div>
+                    <h2>Same points, different numbers of rounds</h2>
+                    <p class="hint" id="cvLede">The latest run of each algorithm.</p>
+                </div>
+                <button class="btn" id="cvClose">Close (Esc)</button>
+            </div>
+            <div class="cv-cols" id="cvCols"></div>
+        </div>
+    </div>
 
     <script src="/static/script.js"></script>
 </body>
