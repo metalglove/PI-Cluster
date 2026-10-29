@@ -51,7 +51,9 @@ class ConnectionManager:
     async def replay(self, websocket: WebSocket):
         for event in self.recorded_events:
             await websocket.send_text(json.dumps(event))
-            await asyncio.sleep(0.05) 
+            await asyncio.sleep(0)  # the UI paces playback itself
+        # Not recorded: tells this client the history is complete
+        await websocket.send_text(json.dumps({"type": "REPLAY_DONE"}))
 
 manager = ConnectionManager()
 

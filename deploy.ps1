@@ -18,7 +18,6 @@ scp ui/index.html pi@raspberrypi:/home/pi/ui/index.html
 
 Write-Host "[4/5] Deploying UI CSS..." -ForegroundColor Yellow
 scp ui/style.css pi@raspberrypi:/home/pi/ui/style.css
-scp ui/mobile.css pi@raspberrypi:/home/pi/ui/mobile.css
 
 Write-Host "[5/5] Deploying UI JavaScript..." -ForegroundColor Yellow
 scp ui/script.js pi@raspberrypi:/home/pi/ui/script.js

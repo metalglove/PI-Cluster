@@ -390,13 +390,22 @@ class UIClient:
     def send_start_guess(self, j: int, threshold: float):
         self.send("START_GUESS", {"value": j, "threshold": threshold})
 
-    def send_circle_added(self, circle: Circle, gain: int, threshold: float, coverage: int, step: int):
+    def send_round(self, kind: str, partitions: List[dict], **details):
+        """One Spark job finished: report what every partition (and its Pi) did."""
+        payload = {"kind": kind, "partitions": partitions}
+        payload.update(details)
+        self.send("ROUND", payload)
+
+    def send_circle_added(self, circle: Circle, gain: int, threshold: float, coverage: int, step: int,
+                          partition: Optional[int] = None, host: Optional[str] = None):
         self.send("CIRCLE_ADDED", {
             "circle": {"cx": circle[0], "cy": circle[1], "r": circle[2]},
             "gain": gain,
             "threshold": threshold,
             "coverage": coverage,
-            "step": step
+            "step": step,
+            "partition": partition,
+            "host": host
         })
 
     def send_final_solution(self, circles: List[Circle], coverage: int, best_j: int, total_points: int):
@@ -417,36 +426,91 @@ class UIClient:
 # GREEDY THRESHOLDING ALGORITHM
 # =============================================================================
 
+def evaluate_on_cluster(
+    sc,
+    indexed_circles: List[Tuple[int, Circle]],
+    score,
+    threshold: Optional[float] = None
+) -> Tuple[List[Tuple[int, int, int]], List[dict]]:
+    """
+    Score every candidate circle on the cluster in one Spark job (= one MapReduce round).
+
+    Returns (results, partition_stats):
+      results: (circle_index, score, partition_id) for candidates with score >= threshold
+               (all candidates when threshold is None), in partition order.
+      partition_stats: one dict per partition saying which machine ran it and how much
+               work it did, so the UI can show the work being split across the Pis.
+    """
+    def run_partition(pid, iterator):
+        import socket
+        import time
+        start = time.time()
+        host = socket.gethostname()
+        ip = None
+        try:
+            # The Spark master lists workers by IP; find ours so the UI can match them up.
+            # (Connecting a UDP socket sends nothing, it only picks the outgoing interface.)
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe.connect(("10.255.255.255", 1))
+            ip = probe.getsockname()[0]
+            probe.close()
+        except OSError:
+            pass
+        kept = []
+        evaluated = 0
+        best = 0
+        for idx, circle in iterator:
+            value = score(circle)
+            evaluated += 1
+            best = max(best, value)
+            if threshold is None or value >= threshold:
+                kept.append((idx, value, pid))
+        yield ("stats", {
+            "partition": pid,
+            "host": host,
+            "ip": ip,
+            "evaluated": evaluated,
+            "passed": len(kept),
+            "best": best,
+            "ms": round((time.time() - start) * 1000, 1)
+        })
+        for item in kept:
+            yield ("result", item)
+
+    output = sc.parallelize(indexed_circles) \
+        .mapPartitionsWithIndex(run_partition) \
+        .collect()
+
+    results = [value for kind, value in output if kind == "result"]
+    stats = [value for kind, value in output if kind == "stats"]
+    return results, stats
+
+
 def find_max_single_coverage(
     circles: List[Circle],
     points: List[Point],
     spark: SparkSession
-) -> Tuple[int, int]:
+) -> Tuple[int, int, List[dict]]:
     """
     Find the circle with maximum coverage (for establishing f(e)).
-    Returns (circle_index, coverage).
+    Returns (circle_index, coverage, partition_stats).
 
     This is parallelized using PySpark.
     """
     sc = spark.sparkContext
     points_bc = sc.broadcast(points)
 
-    def compute_single_coverage(indexed_circle):
-        idx, circle = indexed_circle
-        coverage = sum(1 for p in points_bc.value if point_in_circle(p, circle))
-        return (idx, coverage)
+    def single_coverage(circle):
+        return sum(1 for p in points_bc.value if point_in_circle(p, circle))
 
-    indexed_circles = list(enumerate(circles))
-    results = sc.parallelize(indexed_circles) \
-        .map(compute_single_coverage) \
-        .collect()
+    results, stats = evaluate_on_cluster(sc, list(enumerate(circles)), single_coverage)
 
     # Clean up broadcast to free memory
     points_bc.unpersist()
 
     # Find maximum
-    best_idx, best_coverage = max(results, key=lambda x: x[1])
-    return best_idx, best_coverage
+    best_idx, best_coverage, _ = max(results, key=lambda x: x[1])
+    return best_idx, best_coverage, stats
 
 
 def find_candidate_above_threshold(
@@ -456,42 +520,38 @@ def find_candidate_above_threshold(
     points: List[Point],
     threshold: float,
     spark: SparkSession
-) -> Tuple[Optional[int], int]:
+) -> Tuple[Optional[int], int, Optional[int], List[dict]]:
     """
     Find a circle whose marginal gain >= threshold.
-    Returns (index, gain) or (None, 0).
+    Returns (index, gain, partition_id, partition_stats) or (None, 0, None, partition_stats).
 
     This is parallelized using PySpark.
     """
     if not remaining_indices:
-        return None, 0
+        return None, 0, None, []
 
     sc = spark.sparkContext
     points_bc = sc.broadcast(points)
     current_set_bc = sc.broadcast(current_set)
 
-    def compute_gain(indexed_circle):
-        idx, circle = indexed_circle
-        gain = compute_marginal_gain(circle, current_set_bc.value, points_bc.value)
-        return (idx, gain)
+    def marginal_gain(circle):
+        return compute_marginal_gain(circle, current_set_bc.value, points_bc.value)
 
     # Only consider remaining circles
     candidates = [(i, circles[i]) for i in remaining_indices]
 
-    results = sc.parallelize(candidates) \
-        .map(compute_gain) \
-        .filter(lambda x: x[1] >= threshold) \
-        .collect()
+    results, stats = evaluate_on_cluster(sc, candidates, marginal_gain, threshold)
 
     # Clean up broadcasts to free memory
     points_bc.unpersist()
     current_set_bc.unpersist()
 
     if not results:
-        return None, 0
+        return None, 0, None, stats
 
     # Return the first candidate meeting the threshold
-    return results[0]
+    idx, gain, partition = results[0]
+    return idx, gain, partition, stats
 
 
 def greedy_threshold_single(
@@ -514,9 +574,13 @@ def greedy_threshold_single(
     remaining = set(range(len(circles)))
 
     for step in range(k):
-        candidate_idx, gain = find_candidate_above_threshold(
+        candidate_idx, gain, partition, stats = find_candidate_above_threshold(
             circles, remaining, selected, points, threshold, spark
         )
+
+        if ui_client:
+            ui_client.send_round("threshold", stats, threshold=threshold, step=step + 1,
+                                 found_partition=partition)
 
         if candidate_idx is None:
             break  # No more candidates meet threshold
@@ -528,7 +592,9 @@ def greedy_threshold_single(
         current_total_coverage += gain
 
         if ui_client:
-            ui_client.send_circle_added(circle, gain, threshold, current_total_coverage, step + 1)
+            host = next((p["host"] for p in stats if p["partition"] == partition), None)
+            ui_client.send_circle_added(circle, gain, threshold, current_total_coverage, step + 1,
+                                        partition=partition, host=host)
 
     return selected, current_total_coverage
 
@@ -552,7 +618,10 @@ def greedy_with_guesses(
     if ui_client:
         ui_client.send_status("Calculating max single coverage f(e)...")
         
-    best_circle_idx, f_e = find_max_single_coverage(circles, points, spark)
+    best_circle_idx, f_e, stats = find_max_single_coverage(circles, points, spark)
+
+    if ui_client:
+        ui_client.send_round("oracle", stats, best=f_e)
 
     print(f"Max single-circle coverage: {f_e} (circle index {best_circle_idx})")
 
