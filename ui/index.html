@@ -4,202 +4,134 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Circle Cover | Greedy (NO OPT)</title>
+    <title>Circle Cover on the Pi Cluster</title>
     <link rel="icon" type="image/png" href="/static/favicon.png">
 
-    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
         rel="stylesheet">
 
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
-    <!-- MathJax -->
-    <script>
-        MathJax = {
-            tex: { inlineMath: [['$', '$'], ['\\(', '\\)']] },
-            svg: { fontCache: 'global' }
-        };
-    </script>
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-
-    <!-- Styles -->
     <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/mobile.css">
 </head>
 
 <body>
-
-    <h1>
-        Circle Cover <span style="font-weight:300; opacity:0.7">|</span> Greedy Thresholding (NO OPT assumption)
-        <button id="replayBtn">Replay Last Run</button>
-    </h1>
-
-    <div class="metrics-box">
-        <div class="metric-card glass-panel">
-            <div class="metric-value" id="k-value" style="color: var(--success)">-</div>
-            <div class="metric-label">Circles Selected</div>
+    <header class="masthead">
+        <div class="title-block">
+            <h1>Circle cover, threshold greedy</h1>
+            <p class="lede">
+                Pick <i>k</i> circles that cover as many points as possible.
+                OPT is unknown, so the algorithm tries a ladder of thresholds τ and keeps the best run.
+                Every candidate check is one Spark job, split across the Raspberry Pis.
+            </p>
         </div>
-        <div class="metric-card glass-panel">
-            <div class="metric-value" id="coverage-value" style="color: var(--primary)">-</div>
-            <div class="metric-label">Points Covered</div>
-        </div>
-        <div class="metric-card glass-panel">
-            <div class="metric-value">
-                <span id="guess-value" style="color: var(--warning)">-</span> / <span id="total-guesses">-</span>
+
+        <div class="run-block">
+            <div class="segmented" role="radiogroup" aria-label="Dataset size">
+                <label><input type="radio" name="jobSize" value="small" checked><span>2K pts</span></label>
+                <label><input type="radio" name="jobSize" value="medium"><span>25K pts</span></label>
+                <label><input type="radio" name="jobSize" value="large"><span>100K pts</span></label>
             </div>
-            <div class="metric-label">Current Guess (j)</div>
+            <button id="runBtn" class="btn btn-primary">Run on cluster</button>
+            <div class="conn"><span class="dot" id="connDot"></span><span id="connText">Connecting</span></div>
         </div>
-        <div class="metric-card glass-panel">
-            <div class="metric-value" id="threshold-value" style="color: var(--danger)">-</div>
-            <div class="metric-label">Threshold Value</div>
-        </div>
-    </div>
+    </header>
 
-    <div class="container">
-        <div class="left-col">
-            <div class="canvas-container glass-panel">
-                <div id="status" style="position: absolute;">Waiting...</div>
-                <div id="algo-status" style="position: absolute;">System Ready</div>
-                <canvas id="vizCanvas"></canvas>
-            </div>
-
-            <div class="info-box glass-panel">
-                <div class="info-section" style="margin-bottom: 20px;">
-                    <!-- Config Grid -->
-                    <div class="config-grid">
-                        <div class="config-item">
-                            <span class="label">Points</span>
-                            <span class="value" id="conf-points">-</span>
-                        </div>
-                        <div class="config-item">
-                            <span class="label">Circles</span>
-                            <span class="value" id="conf-circles">-</span>
-                        </div>
-                        <div class="config-item">
-                            <span class="label">Max K</span>
-                            <span class="value" id="conf-k" style="color:var(--primary)">-</span>
-                        </div>
-                        <div class="config-item">
-                            <span class="label">Epsilon</span>
-                            <span class="value" id="conf-eps">-</span>
-                        </div>
-                    </div>
+    <main class="layout">
+        <section class="figure-col">
+            <figure class="card figure">
+                <div class="canvas-wrap">
+                    <canvas id="vizCanvas"></canvas>
+                    <div class="empty-note" id="emptyNote">No run yet. Pick a dataset size and press <b>Run on cluster</b>.</div>
                 </div>
+                <figcaption>
+                    <span id="caption">Points are the ground set. Each selected circle is coloured by the Pi whose partition found it.</span>
+                    <span class="legend" id="legend"></span>
+                </figcaption>
+            </figure>
 
-                <h3>Algorithm Status</h3>
-
-                <div class="info-section">
-                    <div class="info-label">Algorithm Complexity</div>
-                    <div class="info-value">O(nk ε⁻¹ log k)</div>
+            <div class="card playback" id="playback">
+                <div class="pb-buttons">
+                    <button class="btn icon" id="pbStart" title="Back to start" aria-label="Back to start">⏮</button>
+                    <button class="btn icon" id="pbBack" title="Previous event (←)" aria-label="Previous event">◀ Step</button>
+                    <button class="btn icon wide" id="pbPlay" title="Play / pause (space)" aria-label="Play or pause">Pause</button>
+                    <button class="btn icon" id="pbFwd" title="Next event (→)" aria-label="Next event">Step ▶</button>
+                    <button class="btn icon" id="pbEnd" title="Jump to latest" aria-label="Jump to latest">⏭</button>
                 </div>
-
-                <div class="info-section">
-                    <div class="info-label">Guesses Formula:</div>
-                    <div class="formula-container">
-                        $$ y = \lceil \frac{\log(k)}{\log(1+\epsilon)} \rceil $$
-                    </div>
-                </div>
-
-                <div class="collapsible-section" id="pseudocode-section">
-                    <div class="collapsible-header" onclick="toggleSection('pseudocode-section')">
-                        <span style="font-size: 14px; color: var(--text-muted); text-transform: uppercase;">Algorithm
-                            Steps</span>
-                        <span class="toggle-icon">▼</span>
-                    </div>
-                    <div class="collapsible-content">
-                        <div class="pseudocode">
-                            <div class="code-line" id="line-1">1. Find max single coverage f(e) (Oracle)</div>
-                            <div class="code-line" id="line-2">2. Calculate total guesses y</div>
-                            <div class="code-line" id="line-3">3. For j = 0 to y:</div>
-                            <div class="code-line" id="line-4">&nbsp;&nbsp;4. Set Threshold τ = ((1+ε)^j * f(e)) / 2k
-                            </div>
-                            <div class="code-line" id="line-5">&nbsp;&nbsp;5. Initialize S = {}</div>
-                            <div class="code-line" id="line-6">&nbsp;&nbsp;6. While |S| < k:</div>
-                                    <div class="code-line" id="line-7">&nbsp;&nbsp;&nbsp;&nbsp;7. Find ANY circle c with
-                                        Gain(c)
-                                        >= τ</div>
-                                    <div class="code-line" id="line-8">&nbsp;&nbsp;&nbsp;&nbsp;8. If found: S.add(c)
-                                    </div>
-                                    <div class="code-line" id="line-9">&nbsp;&nbsp;&nbsp;&nbsp;9. Else: Break internal
-                                        loop
-                                    </div>
-                                    <div class="code-line" id="line-10">&nbsp;&nbsp;10. If f(S) > Best: Best = S</div>
-                                    <div class="code-line" id="line-11">11. Report Best Solution</div>
-                            </div>
-                        </div>
-                    </div>
+                <input type="range" id="pbScrub" min="0" max="0" value="0" aria-label="Timeline">
+                <div class="pb-meta">
+                    <span id="pbLabel">0 / 0</span>
+                    <select id="pbSpeed" aria-label="Playback speed">
+                        <option value="0.5">0.5×</option>
+                        <option value="1" selected>1×</option>
+                        <option value="2">2×</option>
+                        <option value="4">4×</option>
+                        <option value="16">16×</option>
+                    </select>
                 </div>
             </div>
+        </section>
 
-            <div class="right-col">
-                <div class="chart-box glass-panel">
-                    <canvas id="gainChart"></canvas>
+        <section class="side-col">
+            <div class="card">
+                <div class="now-line" id="nowLine">Waiting for a run.</div>
+                <dl class="stats">
+                    <div><dt>Guess <i>j</i></dt><dd><span id="sGuess">–</span><small id="sGuessTotal"></small></dd></div>
+                    <div><dt>Threshold τ</dt><dd id="sTau">–</dd></div>
+                    <div><dt>|S| / <i>k</i></dt><dd><span id="sSize">–</span><small id="sK"></small></dd></div>
+                    <div><dt><i>f</i>(S)</dt><dd id="sCov">–</dd></div>
+                </dl>
+            </div>
+
+            <div class="card">
+                <h2>Marginal gain per pick</h2>
+                <p class="hint">Bar = Δ<i>f</i>(c | S) of the circle added at that step. Dashed line = τ. A circle is taken only if its gain clears τ.</p>
+                <div class="chart-wrap"><canvas id="gainChart"></canvas></div>
+            </div>
+
+            <div class="card">
+                <h2>Algorithm</h2>
+                <ol class="code" id="code">
+                    <li id="line-1">f(e) ← max single-circle coverage <em>(1 Spark job)</em></li>
+                    <li id="line-2">y ← ⌈log k / log(1+ε)⌉</li>
+                    <li id="line-3">for j = 0 … y:</li>
+                    <li id="line-4" class="i1">τ ← (1+ε)<sup>j</sup> · f(e) / 2k</li>
+                    <li id="line-5" class="i1">S ← ∅</li>
+                    <li id="line-6" class="i1">while |S| &lt; k:</li>
+                    <li id="line-7" class="i2">find any c with Δf(c | S) ≥ τ <em>(1 Spark job)</em></li>
+                    <li id="line-8" class="i2">if found: S ← S ∪ {c}</li>
+                    <li id="line-9" class="i2">else: stop this guess</li>
+                    <li id="line-10" class="i1">keep S if f(S) is the best so far</li>
+                    <li id="line-11">return best S</li>
+                </ol>
+            </div>
+
+            <div class="card">
+                <h2>Guesses</h2>
+                <div class="guesses" id="guesses"><p class="hint">One row per threshold tried.</p></div>
+            </div>
+        </section>
+
+        <section class="card cluster">
+            <div class="cluster-head">
+                <div>
+                    <h2>Work on the cluster</h2>
+                    <p class="hint" id="roundHint">Each round, Spark splits the remaining candidate circles into partitions and the Pis score them at the same time.</p>
                 </div>
-                <div class="chart-box glass-panel">
-                    <canvas id="coverageChart"></canvas>
-                </div>
-
-                <div class="control-box glass-panel">
-                    <div class="control-header">
-                        <h3>Cluster Control</h3>
-                        <div class="worker-status">
-                            <div class="status-dot" id="worker-dot"></div>
-                            <span id="worker-text">Workers Idle</span>
-                        </div>
-                    </div>
-
-                    <!-- Job Size Selection -->
-                    <div class="job-size-selector">
-                        <label class="size-label">Dataset Size:</label>
-                        <div class="size-options">
-                            <label class="size-option">
-                                <input type="radio" name="jobSize" value="small" checked>
-                                <span class="size-info">
-                                    <span class="size-name">Small</span>
-                                    <span class="size-desc">2K points</span>
-                                </span>
-                            </label>
-                            <label class="size-option">
-                                <input type="radio" name="jobSize" value="medium">
-                                <span class="size-info">
-                                    <span class="size-name">Medium</span>
-                                    <span class="size-desc">25K points</span>
-                                </span>
-                            </label>
-                            <label class="size-option">
-                                <input type="radio" name="jobSize" value="large">
-                                <span class="size-info">
-                                    <span class="size-name">Large</span>
-                                    <span class="size-desc">100K points</span>
-                                </span>
-                            </label>
-                        </div>
-                    </div>
-
-                    <button id="runBtn" class="run-btn">Run New Simulation</button>
-
-                    <div class="queue-list" id="job-queue">
-                        <!-- Job items injected here -->
-                    </div>
-                </div>
-
-                <div class="worker-box glass-panel">
-                    <h3
-                        style="margin-top:0; border-bottom:1px solid var(--card-border); padding-bottom:10px; margin-bottom:10px; font-size:14px; color:var(--text-muted); text-transform:uppercase;">
-                        Active Nodes</h3>
-                    <div id="worker-list" class="worker-grid">
-                        <div style="text-align:center; color: var(--text-muted); padding: 10px;">Loading...</div>
-                    </div>
+                <div class="round-count">
+                    <span class="big" id="roundCount">0</span>
+                    <span>rounds (Spark jobs) so far</span>
                 </div>
             </div>
-        </div>
 
-        <!-- Logic -->
-        <script src="/static/script.js"></script>
+            <div class="share" id="share" aria-label="Share of all candidate checks per Pi"></div>
+            <div class="share-caption" id="shareCaption"></div>
+            <div class="lanes" id="lanes"></div>
+        </section>
+    </main>
+
+    <script src="/static/script.js"></script>
 </body>
 
 </html>
