@@ -26,6 +26,8 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
         self.recorded_events: List[dict] = []
+        # algorithm -> events of its latest run, for the UI's side-by-side comparison
+        self.runs: dict = {}
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -46,6 +48,8 @@ class ConnectionManager:
     def record_event(self, data: dict):
         if data.get('type') == 'INIT':
             self.recorded_events = []
+            algorithm = (data.get('config') or {}).get('algorithm', 'greedy')
+            self.runs[algorithm] = self.recorded_events   # same list: later events land in both
         self.recorded_events.append(data)
         
     async def replay(self, websocket: WebSocket):
@@ -79,6 +83,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 pass
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+@app.get("/runs")
+async def get_runs():
+    """Latest run of each algorithm, so the UI can compare them side by side."""
+    return manager.runs
 
 @app.post("/update")
 async def update_event(request: Request):

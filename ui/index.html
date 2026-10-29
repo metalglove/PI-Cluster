@@ -45,6 +45,8 @@
                 <label><input type="radio" name="jobSize" value="large"><span>100K pts</span></label>
             </div>
             <button id="runBtn" class="btn btn-primary">Run on cluster</button>
+            <button id="compareBtn" class="btn">Compare</button>
+            <button id="presentBtn" class="btn" title="Full screen, larger text (P)">Present</button>
             <button id="themeBtn" class="btn theme-toggle" aria-label="Toggle dark mode">Dark</button>
             <div class="conn"><span class="dot" id="connDot"></span><span id="connText">Connecting</span></div>
         </div>
@@ -71,7 +73,10 @@
                     <button class="btn icon" id="pbFwd" title="Next event (→)" aria-label="Next event">Step ▶</button>
                     <button class="btn icon" id="pbEnd" title="Jump to latest" aria-label="Jump to latest">⏭</button>
                 </div>
-                <input type="range" id="pbScrub" min="0" max="0" value="0" aria-label="Timeline">
+                <div class="scrub">
+                    <input type="range" id="pbScrub" min="0" max="0" value="0" aria-label="Timeline">
+                    <div class="ticks" id="chapterTicks" aria-hidden="true"></div>
+                </div>
                 <div class="pb-meta">
                     <span id="pbLabel">0 / 0</span>
                     <select id="pbSpeed" aria-label="Playback speed">
@@ -82,6 +87,7 @@
                         <option value="16">16×</option>
                     </select>
                 </div>
+                <nav class="chapters" id="chapters" aria-label="Chapters"></nav>
             </div>
         </section>
 
@@ -108,7 +114,7 @@
                 <ol class="code" id="code"></ol>
             </div>
 
-            <div class="card">
+            <div class="card guesses-card">
                 <h2>Guesses</h2>
                 <div class="guesses" id="guesses"><p class="hint">One row per threshold tried.</p></div>
             </div>
@@ -148,6 +154,21 @@
             <div class="lanes" id="lanes"></div>
         </section>
     </main>
+
+    <button class="btn exit-present" id="exitPresent">Exit (Esc)</button>
+
+    <div class="compare-view" id="compareView" hidden>
+        <div class="cv-inner card">
+            <div class="cv-head">
+                <div>
+                    <h2>Two ways to cover the same points</h2>
+                    <p class="hint" id="cvLede">The latest run of each algorithm.</p>
+                </div>
+                <button class="btn" id="cvClose">Close (Esc)</button>
+            </div>
+            <div class="cv-cols" id="cvCols"></div>
+        </div>
+    </div>
 
     <script src="/static/script.js"></script>
 </body>

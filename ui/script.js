@@ -662,7 +662,52 @@ function renderPlayback() {
     $('pbFwd').disabled = cursor >= n - 1;
     $('pbEnd').disabled = cursor >= n - 1;
     drawRoundStrip();
+    renderChapters();
 }
+
+// --- Chapters: the moments worth stopping at in a lecture ---
+function chapterLabel(e) {
+    switch (e.type) {
+        case 'SAMPLE': return 'Sample S';
+        case 'START_GUESS': return `j = ${e.value}`;
+        case 'FINAL_SOLUTION': return 'Result';
+        case 'ROUND':
+            return {
+                oracle: 'f(e)', alg6_r1: 'Alg 6 · round 1', alg6_r2: 'Alg 6 · round 2',
+                alg7_r1: 'Alg 7 · round 1', alg7_r2: 'Alg 7 · round 2'
+            }[e.kind] || null;
+    }
+    return null;
+}
+
+function chapterList() {
+    return timeline.map((e, i) => ({ i, label: chapterLabel(e) })).filter(c => c.label);
+}
+
+let renderedChapters = '';
+function renderChapters() {
+    const list = chapterList();
+    const key = list.map(c => c.i).join(',') + '|' + cursor;
+    if (key === renderedChapters) return;
+    renderedChapters = key;
+    const current = list.filter(c => c.i <= cursor).pop();
+    $('chapters').innerHTML = list.map(c =>
+        `<button data-i="${c.i}" class="${current && c.i === current.i ? 'on' : ''}">${c.label}</button>`).join('');
+    const span = Math.max(1, timeline.length - 1);
+    $('chapterTicks').innerHTML = list.map(c => `<i style="left:${100 * c.i / span}%"></i>`).join('');
+}
+
+function jumpChapter(dir) {
+    const list = chapterList();
+    const target = dir > 0 ? list.find(c => c.i > cursor) : list.filter(c => c.i < cursor).pop();
+    setPlaying(false);
+    seek(target ? target.i : (dir > 0 ? timeline.length - 1 : -1));
+}
+
+$('chapters').addEventListener('click', e => {
+    const b = e.target.closest('button[data-i]');
+    if (b) { setPlaying(false); seek(Number(b.dataset.i)); }
+});
 
 // --- Rendering: canvases ---
 function setupCanvas(canvas) {
@@ -846,27 +891,34 @@ const stripCanvas = $('roundStrip');
 let stripColumns = [];   // [{x, w, index}] for click-to-seek
 
 function drawRoundStrip() {
-    const { ctx, w, h } = setupCanvas(stripCanvas);
+    stripColumns = drawStrip(stripCanvas, timeline, cursor, { mark: state.lastRound?.timelineIndex });
+}
+
+// Draws events' rounds on canvas; rounds after index `upto` as outlines. With `slots`, every
+// column gets the width of 1/slots of the canvas, so two strips can share one scale.
+function drawStrip(canvas, events, upto, { mark = null, slots = null } = {}) {
+    const { ctx, w, h } = setupCanvas(canvas);
     ctx.clearRect(0, 0, w, h);
     const rounds = [];
     let guess = null;
-    timeline.forEach((e, i) => {
+    events.forEach((e, i) => {
         if (e.type === 'START_GUESS') guess = e.value;
         if (e.type === 'ROUND') rounds.push({ e, i, guess, cost: roundCost(e) });
     });
-    stripColumns = [];
+    const columns = [];
     if (!rounds.length) {
         ctx.fillStyle = C.muted;
         ctx.font = '13px "IBM Plex Sans", sans-serif';
         ctx.textBaseline = 'middle';
         ctx.fillText('Each round of the run will appear here as a column.', 0, h / 2);
-        return;
+        return columns;
     }
     const two = rounds.some(r => r.e.round);
     const labelH = 18;
     const top = 6, base = h - labelH;
-    const gap = rounds.length > 60 ? 1 : 4;
-    const colW = Math.max(2, Math.min(two ? 90 : 26, (w - gap * (rounds.length - 1)) / rounds.length));
+    const n = slots || rounds.length;
+    const gap = n > 60 ? 1 : 4;
+    const colW = Math.max(2, Math.min(slots ? Infinity : (two ? 90 : 26), (w - gap * (n - 1)) / n));
     const maxTotal = Math.max(1, ...rounds.map(r => Object.values(r.cost.load).reduce((a, b) => a + b, 0)));
     const Y = v => (v / maxTotal) * (base - top);
 
@@ -874,10 +926,10 @@ function drawRoundStrip() {
     ctx.textBaseline = 'top';
     let lastGuess = undefined;
     let lastLabelX = -Infinity;
-    rounds.forEach((r, n) => {
-        const x = n * (colW + gap);
-        const done = r.i <= cursor;
-        stripColumns.push({ x, w: colW + gap, index: r.i });
+    rounds.forEach((r, k) => {
+        const x = k * (colW + gap);
+        const done = r.i <= upto;
+        columns.push({ x, w: colW + gap, index: r.i });
         let y = base;
         Object.entries(r.cost.load).forEach(([key, v]) => {
             const hgt = Math.max(1, Y(v));
@@ -896,7 +948,7 @@ function drawRoundStrip() {
                 ctx.strokeRect(x + 0.5, y + 0.5, colW - 1, hgt - 1);
             }
         });
-        if (r.i === state.lastRound?.timelineIndex) {
+        if (r.i === mark) {
             ctx.fillStyle = C.ink;
             ctx.fillRect(x, base + 2, colW, 2);
         }
@@ -916,6 +968,7 @@ function drawRoundStrip() {
         }
         lastGuess = r.guess;
     });
+    return columns;
 }
 
 stripCanvas.addEventListener('click', ev => {
@@ -945,12 +998,124 @@ $('pbSpeed').addEventListener('change', schedule);
 
 // Keep focus off buttons so space and the arrow keys always drive playback.
 document.querySelectorAll('button').forEach(b => b.addEventListener('mouseup', () => b.blur()));
+// Keys: space play/pause, ← → step, [ ] or PageUp/PageDown (presentation clickers) jump a
+// chapter, P present, C compare, Esc close.
 document.addEventListener('keydown', e => {
     if (e.target.closest('input, select')) return;
+    if (e.key === 'Escape') { setPresenting(false); showCompare(false); return; }
     if (e.key === ' ') { e.preventDefault(); $('pbPlay').click(); }
     else if (e.key === 'ArrowRight') $('pbFwd').click();
     else if (e.key === 'ArrowLeft') $('pbBack').click();
+    else if (e.key === ']' || e.key === 'PageDown') { e.preventDefault(); jumpChapter(1); }
+    else if (e.key === '[' || e.key === 'PageUp') { e.preventDefault(); jumpChapter(-1); }
+    else if (e.key === 'p' || e.key === 'P') setPresenting(!document.documentElement.classList.contains('presenting'));
+    else if (e.key === 'c' || e.key === 'C') showCompare($('compareView').hidden);
 });
+
+// --- Presenter mode ---
+function setPresenting(on) {
+    document.documentElement.classList.toggle('presenting', on);
+    try {
+        if (on && !document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+        if (!on && document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    } catch (e) { /* fullscreen is optional */ }
+    requestAnimationFrame(renderPanels);   // canvases resize with the layout
+}
+$('presentBtn').addEventListener('click', () => setPresenting(true));
+$('exitPresent').addEventListener('click', () => setPresenting(false));
+document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement) setPresenting(false);
+});
+
+// --- Side-by-side comparison of the latest run of each algorithm ---
+function summarizeRun(events) {
+    const init = events.find(e => e.type === 'INIT');
+    const final = events.find(e => e.type === 'FINAL_SOLUTION');
+    if (!init || !final) return null;
+    const rounds = events.filter(e => e.type === 'ROUND');
+    return {
+        events, init, final,
+        rounds: rounds.reduce((n, e) => e.round ? Math.max(n, e.round) : n + 1, 0),
+        jobs: rounds.filter(e => !e.central).length,
+        sent: rounds.reduce((n, e) => n + roundCost(e).sent, 0),
+        maxLoad: Math.max(0, ...rounds.map(e => Math.max(...Object.values(roundCost(e).load))))
+    };
+}
+
+function drawMiniFigure(canvas, run) {
+    const { ctx, w, h } = setupCanvas(canvas);
+    ctx.clearRect(0, 0, w, h);
+    const b = run.init.bounds, circles = run.final.circles;
+    const pad = 110;   // room for circles near the edge
+    const scale = Math.min(w / (b.maxX - b.minX + 2 * pad), h / (b.maxY - b.minY + 2 * pad));
+    const X = x => (w - (b.maxX - b.minX) * scale) / 2 + (x - b.minX) * scale;
+    const Y = y => (h - (b.maxY - b.minY) * scale) / 2 + (y - b.minY) * scale;
+    for (const [x, y] of run.init.points) {
+        const covered = circles.some(c => (x - c.cx) ** 2 + (y - c.cy) ** 2 <= c.r * c.r);
+        ctx.fillStyle = covered ? C.pointCovered : C.point;
+        ctx.fillRect(X(x) - 1, Y(y) - 1, 2, 2);
+    }
+    ctx.strokeStyle = C.ink;
+    ctx.lineWidth = 1.6;
+    for (const c of circles) {
+        ctx.beginPath();
+        ctx.arc(X(c.cx), Y(c.cy), c.r * scale, 0, Math.PI * 2);
+        ctx.fillStyle = hexAlpha(C.ink, 0.06);
+        ctx.fill();
+        ctx.stroke();
+    }
+}
+
+async function showCompare(on) {
+    $('compareView').hidden = !on;
+    if (!on) return;
+    let runs = {};
+    try { runs = await (await fetch('/runs')).json(); } catch (e) { /* shown as missing below */ }
+    const summaries = Object.fromEntries(Object.keys(ALGORITHMS).map(a => [a, runs[a] ? summarizeRun(runs[a]) : null]));
+    const slots = Math.max(1, ...Object.values(summaries).filter(Boolean)
+        .map(r => r.events.filter(e => e.type === 'ROUND').length));
+
+    $('cvCols').innerHTML = Object.keys(ALGORITHMS).map(a => {
+        const r = summaries[a];
+        if (!r) {
+            return `<div class="cv-col"><h3>${ALGORITHMS[a].title}</h3>
+                <p class="cv-empty">No finished run yet. Pick “${ALGORITHMS[a].name}” and press Run on cluster.</p></div>`;
+        }
+        const pct = r.final.coverage_percentage;
+        const time = r.final.elapsed_s != null ? `${fmt(Math.round(r.final.elapsed_s))} s` : '–';
+        return `<div class="cv-col">
+            <h3>${ALGORITHMS[a].title}</h3>
+            <canvas class="cv-fig" id="cvFig-${a}"></canvas>
+            <dl>
+                <div><dt>Points covered</dt><dd>${fmt(r.final.coverage)} <small>(${pct}%)</small></dd></div>
+                <div><dt>Rounds</dt><dd>${fmt(r.rounds)}</dd></div>
+                <div><dt>Wall time</dt><dd>${time}</dd></div>
+                <div><dt>Spark jobs</dt><dd>${fmt(r.jobs)}</dd></div>
+                <div><dt>Sent to driver</dt><dd>${fmt(r.sent)}</dd></div>
+                <div><dt>Most on one machine</dt><dd>${fmt(r.maxLoad)}</dd></div>
+            </dl>
+            <canvas class="cv-strip" id="cvStrip-${a}"></canvas>
+        </div>`;
+    }).join('');
+
+    const g = summaries.greedy, t = summaries.theorem8;
+    $('cvLede').textContent = g && t
+        ? `Same kind of input (${fmt(g.final.total_points)} and ${fmt(t.final.total_points)} points). ` +
+          `Theorem 8 needs ${t.rounds} rounds where threshold greedy needs ${fmt(g.rounds)}, and covers ` +
+          `${fmt(t.final.coverage)} points against ${fmt(g.final.coverage)}. Both strips use the same scale: ` +
+          `one column per Spark job.`
+        : 'The latest finished run of each algorithm. Run both to compare them.';
+
+    for (const a of Object.keys(ALGORITHMS)) {
+        const r = summaries[a];
+        if (!r) continue;
+        drawMiniFigure($(`cvFig-${a}`), r);
+        drawStrip($(`cvStrip-${a}`), r.events, r.events.length, { slots });
+    }
+}
+$('compareBtn').addEventListener('click', () => showCompare(true));
+$('cvClose').addEventListener('click', () => showCompare(false));
+$('compareView').addEventListener('click', e => { if (e.target === $('compareView')) showCompare(false); });
 
 // --- Theme ---
 function renderThemeButton() {
