@@ -242,9 +242,11 @@ def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Poin
         return local_res
 
     # we aggregate the result by key (j) to get the union of all Ri for each guess j across all machines (cores / partitions).
-    round1_aggregated_guesses = circles_rdd.mapPartitions(mapper_round1) \
+    # guesses for which no machine sent any Ri (e.g., |G0| = k) are missing here and get an empty union in round 2.
+    round1_aggregated_guesses = dict(circles_rdd.mapPartitions(mapper_round1) \
         .reduceByKey(add) \
-        .collect()
+        .collect())
+    num_guesses = int(math.ceil((1.0 / epsilon) * math.log(k)))
         
     # -------------------------------------------------------------------------
     # ROUND 2: Central Aggregation
@@ -254,7 +256,10 @@ def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Poin
     
     # for each guess j, we use the union of all Ri from round 1 to compute a new solution G and its coverage,
     # and we keep track of the best solution across all guesses.
-    for j, R_union in round1_aggregated_guesses:
+    # as per paper, every guess j is evaluated, even when the union of all Ri is empty (then G = G0).
+    for j in range(1, num_guesses + 1):
+        R_union = round1_aggregated_guesses.get(j, [])
+        
         # we recompute the threshold tau_j for the central aggregation step, as it is used in the greedy algorithm to compute G0 and G.
         tau_j = (v_bc.value * ((1.0 + epsilon) ** j)) / k
         
