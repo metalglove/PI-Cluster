@@ -1,6 +1,8 @@
 """
 Circle Cover Problem - MapReduce Algorithm (arXiv:1810.01489)
 Algorithm 6 (Dense Inputs): 1/2 - epsilon approximation in 2 rounds
+Algorithm 7 (Sparse Inputs): 1/2 - epsilon approximation in 2 rounds
+Theorem 8: running Algorithms 6 and 7 in parallel gives a 2-round 1/2 - epsilon approximation for all inputs
 
 SETUP:
   Install dependencies:
@@ -281,6 +283,98 @@ def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Poin
     return best_sol, best_cov
 
 # =============================================================================
+# ALGORITHM 7 (2-Round MapReduce, Sparse Inputs)
+# =============================================================================
+
+def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False, top_factor: int = 2):
+    """
+    Algorithm 7: A 1/2 - epsilon approximation for sparse inputs in 2 rounds of MapReduce.
+     - Round 1: each machine sends its O(k) largest elements to the central machine
+     - Round 2: Central thresholding on the received elements
+    Note: the paper only specifies O(k) elements per machine; we send top_factor * k elements.
+    """
+    # partition V uniformly at random to the m machines.
+    # we shuffle a copy of the circles before parallelizing, as sc.parallelize slices the list in order.
+    shuffled = list(circles)
+    random.Random(seed).shuffle(shuffled)
+    circles_rdd = sc.parallelize(shuffled, 16 if cluster_mode else 8) # m
+
+    # NOTE: assumption that all points are broadcasted (or accessible via oracle) to all machines as per paper.
+    points_bc = sc.broadcast(points)
+
+    # the number of largest elements each machine sends to the central machine.
+    top_count = top_factor * k
+
+    # -------------------------------------------------------------------------
+    # ROUND 1: each machine sends its O(k) largest elements
+    # -------------------------------------------------------------------------
+    def mapper_round1(iterator):
+        # compute f({e}) for every element on this machine and keep the top_count largest.
+        valued = [(compute_coverage([c], points_bc.value), c) for c in iterator]
+        valued.sort(key=lambda x: x[0], reverse=True)
+        return valued[:top_count]
+
+    round1_elements = circles_rdd.mapPartitions(mapper_round1).collect()
+
+    # -------------------------------------------------------------------------
+    # ROUND 2: Central Thresholding
+    # -------------------------------------------------------------------------
+    # S = all elements sent to the central machine, in decreasing order of f({e}).
+    round1_elements.sort(key=lambda x: x[0], reverse=True)
+    S = [c for _, c in round1_elements]
+
+    # v = max_{e in S} f({e}).
+    v = round1_elements[0][0] if round1_elements else 0
+
+    print(f"Elements sent to central machine: {len(S)}")
+    print(f"Max value estimate (from largest elements): {v}")
+
+    best_sol = []
+    best_cov = 0
+
+    # the number of guesses is (1/epsilon) * log(k) as per paper.
+    num_guesses = int(math.ceil((1.0 / epsilon) * math.log(k)))
+
+    for j in range(1, num_guesses + 1):
+        # compute threshold tau_j = (v * ((1 + epsilon) ** j)) / k as per paper.
+        tau_j = (v * ((1.0 + epsilon) ** j)) / k
+
+        # G_j = Greedy(S, empty, tau_j)
+        G = threshold_greedy_local(S, [], k, tau_j, points_bc.value)
+
+        # compute coverage of G using the oracle (compute_coverage) and update best solution if needed.
+        cov = compute_coverage(G, points_bc.value)
+        if cov > best_cov:
+            best_cov = cov
+            best_sol = G
+
+    # return the best solution and its coverage.
+    return best_sol, best_cov
+
+# =============================================================================
+# THEOREM 8 (Algorithms 6 and 7 in parallel)
+# =============================================================================
+
+def theorem_8_combined(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False):
+    """
+    Theorem 8: By running Algorithms 6 and 7 in parallel, we have a 2-round 1/2 - epsilon approximation.
+    We do not know whether the input is dense or sparse, so we run both and return the better of the two solutions.
+    Note: in the paper each machine runs both algorithms in the same 2 rounds; here they run as separate Spark jobs.
+    """
+    print("Running Algorithm 6 (dense)...")
+    sol_6, cov_6 = algorithm_6_dense(sc, circles, points, k, epsilon, seed, cluster_mode)
+    print(f"Algorithm 6 coverage: {cov_6}")
+
+    print("Running Algorithm 7 (sparse)...")
+    sol_7, cov_7 = algorithm_7_sparse(sc, circles, points, k, epsilon, seed, cluster_mode)
+    print(f"Algorithm 7 coverage: {cov_7}")
+
+    # return the better of the two solutions.
+    if cov_7 > cov_6:
+        return sol_7, cov_7
+    return sol_6, cov_6
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -308,8 +402,7 @@ def main():
     circles = generate_circles(cfg["N_CIRCLES"], (0,0,1000,1000), (30,100), seed=43)
     
     # 3. Algorithm
-    print("Running Algorithm 6...")
-    sol, cov = algorithm_6_dense(sc, circles, points, k=10, epsilon=0.2, seed=56, cluster_mode=args.cluster)
+    sol, cov = theorem_8_combined(sc, circles, points, k=10, epsilon=0.2, seed=56, cluster_mode=args.cluster)
     
     print("-" * 60)
     print(f"Solution Size: {len(sol)}")
