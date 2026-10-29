@@ -693,7 +693,9 @@ def main():
             display_points, BOUNDS, 
             len(display_points), len(circles), K, EPSILON,
             total_points=total_points,
-            total_guesses=total_guesses
+            total_guesses=total_guesses,
+            # identifies the input, so the UI only compares runs on the same data
+            dataset=f"{args.size}/seed{SEED}/std80"
         )
 
     # Run algorithm

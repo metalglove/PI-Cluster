@@ -659,7 +659,8 @@ def main():
         else:
             guesses, extra = int(math.ceil((1.0 / 0.2) * math.log(10))), {}
         ui.send_init(shown, (0, 0, 1000, 1000), len(shown), len(circles), 10, 0.2,
-                     total_points=len(points), total_guesses=guesses, algorithm=args.algorithm, **extra)
+                     total_points=len(points), total_guesses=guesses, algorithm=args.algorithm,
+                     dataset=f"{args.size}/seed42/std80", **extra)   # same input as main.py
 
     # 3. Algorithm
     if args.algorithm == "alg5":
