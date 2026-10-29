@@ -7,13 +7,39 @@
     --rule: #e2ddd2;
     --rule-strong: #cdc6b8;
     --point: #b3ada2;
-    --accent: #1f1d1a;
+    --point-covered: #57534c;
+    --highlight: #efe9dc;
+    --flash: #f1e7d0;
+    --primary-hover: #3a3732;
     --good: #4f7a3a;
     --bad: #a8432a;
+    /* One colour per machine */
+    --m0: #c0532c; --m1: #2c6a96; --m2: #5b7f35; --m3: #8a4c86; --m4: #b4861a; --m5: #357d78;
+    color-scheme: light;
 
     --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
     --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+
+/* Dark: warm charcoal instead of paper, same structure. Set by the toggle (or the OS on first visit). */
+:root[data-theme="dark"] {
+    --paper: #161513;
+    --surface: #1e1c19;
+    --ink: #ece6da;
+    --ink-2: #b7b0a3;
+    --ink-3: #8a847a;
+    --rule: #33302b;
+    --rule-strong: #4a463f;
+    --point: #4a4640;
+    --point-covered: #d2cabb;
+    --highlight: #2c2925;
+    --flash: #3a3328;
+    --primary-hover: #d6cfc2;
+    --good: #8fb35f;
+    --bad: #e07a52;
+    --m0: #e07a52; --m1: #62a2d4; --m2: #92b862; --m3: #c28cbd; --m4: #dcb04a; --m5: #62b5ad;
+    color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -82,8 +108,10 @@ h2 { font-size: 18px; margin-bottom: 4px; }
 .btn:hover:not(:disabled) { border-color: var(--ink-2); }
 .btn:disabled { color: var(--ink-3); cursor: default; }
 .btn-primary { background: var(--ink); color: var(--surface); border-color: var(--ink); font-weight: 500; }
-.btn-primary:hover:not(:disabled) { background: #3a3732; }
+.btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 .btn-primary:disabled { background: var(--rule-strong); border-color: var(--rule-strong); color: var(--surface); }
+
+.theme-toggle { min-width: 64px; }
 
 .conn { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-3); min-width: 110px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--rule-strong); }
@@ -162,7 +190,7 @@ figcaption {
 .code li.i1 { padding-left: 26px; }
 .code li.i2 { padding-left: 44px; }
 .code li em { color: var(--ink-3); font-style: normal; font-family: var(--sans); font-size: 12px; }
-.code li.active { border-left-color: var(--ink); background: #efe9dc; color: var(--ink); }
+.code li.active { border-left-color: var(--ink); background: var(--highlight); color: var(--ink); }
 
 .guesses { display: flex; flex-direction: column; gap: 2px; max-height: 360px; overflow-y: auto; }
 .g-row {
@@ -176,7 +204,7 @@ figcaption {
     color: var(--ink-2);
     border-radius: 3px;
 }
-.g-row.current { background: #efe9dc; color: var(--ink); }
+.g-row.current { background: var(--highlight); color: var(--ink); }
 .g-row.best { color: var(--ink); font-weight: 500; }
 .g-row.best .g-cov::after { content: " ★"; }
 .g-bar { height: 8px; background: var(--rule); border-radius: 2px; overflow: hidden; }
@@ -224,7 +252,7 @@ figcaption {
 .part.picked { border-color: var(--c); border-width: 2px; padding: 3px 5px; }
 .part.picked .pid::after { content: " ← picked"; font-family: var(--sans); }
 .part.flash { animation: flash 0.6s ease-out; }
-@keyframes flash { from { background: #f1e7d0; } }
+@keyframes flash { from { background: var(--flash); } }
 .parts-empty { color: var(--ink-3); font-size: 13px; align-self: center; }
 
 /* ---------- Narrow screens ---------- */

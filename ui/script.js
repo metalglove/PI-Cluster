@@ -5,21 +5,24 @@
 // stepped through and rewound during a lecture. The page state is always "the result of
 // applying events 0..cursor", which is what makes stepping backwards possible.
 
-// --- Palette ---
-const INK = '#1f1d1a';
-const POINT = '#c4beb2';
-const POINT_COVERED = '#57534c';
-const RULE = '#e2ddd2';
-const MUTED = '#8c877d';
-// One colour per machine, in the order the machines are first seen.
-const MACHINE_COLORS = ['#c0532c', '#2c6a96', '#5b7f35', '#8a4c86', '#b4861a', '#357d78'];
+// --- Palette (read from the CSS variables, so it follows the light/dark theme) ---
+let C = {};
+function readPalette() {
+    const css = getComputedStyle(document.documentElement);
+    const v = name => css.getPropertyValue(name).trim();
+    C = {
+        ink: v('--ink'), point: v('--point'), pointCovered: v('--point-covered'),
+        rule: v('--rule'), ruleStrong: v('--rule-strong'), muted: v('--ink-3'), surface: v('--surface'),
+        machines: [0, 1, 2, 3, 4, 5].map(i => v(`--m${i}`))
+    };
+}
+readPalette();
 
-const machineColors = new Map();
+// One colour per machine, in the order the machines are first seen.
+const machineSlots = new Map();
 function colorFor(key) {
-    if (!machineColors.has(key)) {
-        machineColors.set(key, MACHINE_COLORS[machineColors.size % MACHINE_COLORS.length]);
-    }
-    return machineColors.get(key);
+    if (!machineSlots.has(key)) machineSlots.set(key, machineSlots.size);
+    return C.machines[machineSlots.get(key) % C.machines.length];
 }
 
 // The Spark master lists workers by IP; partitions report hostname and IP.
@@ -355,11 +358,11 @@ function renderLegend() {
     const keys = [...new Set(state.circles.map(c => c.machine).filter(Boolean))];
     let html = keys.map(k =>
         `<span><i class="swatch" style="--c:${colorFor(k)}"></i>found by ${machineLabel(k)}</span>`).join('');
-    if (state.isFinal) html = `<span><i class="swatch" style="--c:${INK}"></i>best solution</span>`;
+    if (state.isFinal) html = `<span><i class="swatch" style="--c:${C.ink}"></i>best solution</span>`;
     $('legend').innerHTML = html;
     $('caption').textContent = state.isFinal
-        ? `Final answer from guess j = ${state.bestGuess}. Dark points are covered.`
-        : 'Each circle is coloured by the Pi whose partition found it. Dark points are covered by S.';
+        ? `Final answer from guess j = ${state.bestGuess}. Covered points are drawn stronger.`
+        : 'Each circle is coloured by the Pi whose partition found it. Covered points are drawn stronger.';
     if (state.sampling) {
         $('caption').textContent += ` Showing ${fmt(state.sampling.displayed)} of ${fmt(state.sampling.total)} points.`;
     }
@@ -420,14 +423,14 @@ function drawFigure() {
     const X = x => ox + (x - b.minX) * scale;
     const Y = y => oy + (y - b.minY) * scale;
 
-    ctx.strokeStyle = RULE;
+    ctx.strokeStyle = C.rule;
     ctx.lineWidth = 1;
     ctx.strokeRect(X(b.minX), Y(b.minY), rangeX * scale, rangeY * scale);
 
     const flags = coveredFlags();
     const pr = s.points.length > 3000 ? 1.1 : 1.6;
     for (const covered of [false, true]) {
-        ctx.fillStyle = covered ? POINT_COVERED : POINT;
+        ctx.fillStyle = covered ? C.pointCovered : C.point;
         ctx.beginPath();
         s.points.forEach(([x, y], i) => {
             if (flags[i] !== covered) return;
@@ -439,7 +442,7 @@ function drawFigure() {
 
     s.circles.forEach((c, i) => {
         if (c.animR < c.r) c.animR = Math.abs(c.r - c.animR) < 0.5 ? c.r : c.animR + (c.r - c.animR) * 0.12;
-        const color = c.machine ? colorFor(c.machine) : INK;
+        const color = c.machine ? colorFor(c.machine) : C.ink;
         const newest = !s.isFinal && i === s.circles.length - 1;
         ctx.beginPath();
         ctx.arc(X(c.cx), Y(c.cy), c.animR * scale, 0, Math.PI * 2);
@@ -481,13 +484,13 @@ function drawGainChart() {
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'right';
     for (let v = 0; v <= top + 1e-9; v += step) {
-        ctx.strokeStyle = v === 0 ? '#cdc6b8' : RULE;
+        ctx.strokeStyle = v === 0 ? C.ruleStrong : C.rule;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(pad.l, Math.round(Y(v)) + 0.5);
         ctx.lineTo(w - pad.r, Math.round(Y(v)) + 0.5);
         ctx.stroke();
-        ctx.fillStyle = MUTED;
+        ctx.fillStyle = C.muted;
         ctx.fillText(fmt(Math.round(v)), pad.l - 6, Y(v));
     }
 
@@ -496,20 +499,20 @@ function drawGainChart() {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     for (let i = 0; i < k; i++) {
-        ctx.fillStyle = MUTED;
+        ctx.fillStyle = C.muted;
         ctx.fillText(String(i + 1), pad.l + slot * (i + 0.5), h - pad.b + 6);
     }
     {
         s.gains.forEach(g => {
             const x = pad.l + slot * (g.step - 0.5) - bw / 2;
-            ctx.fillStyle = g.machine ? colorFor(g.machine) : INK;
+            ctx.fillStyle = g.machine ? colorFor(g.machine) : C.ink;
             ctx.fillRect(x, Y(g.gain), bw, Y(0) - Y(g.gain));
         });
     }
 
     if (tau) {
         ctx.setLineDash([5, 4]);
-        ctx.strokeStyle = INK;
+        ctx.strokeStyle = C.ink;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(pad.l, Y(tau));
@@ -519,16 +522,16 @@ function drawGainChart() {
         // Label on a paper-coloured tab so bars behind it don't make it unreadable.
         const label = `τ = ${fmtTau(tau)}`;
         const lw = ctx.measureText(label).width + 8;
-        ctx.fillStyle = '#fffdf8';
+        ctx.fillStyle = C.surface;
         ctx.fillRect(w - pad.r - lw, Y(tau) - 17, lw, 14);
-        ctx.fillStyle = INK;
+        ctx.fillStyle = C.ink;
         ctx.textAlign = 'right';
         ctx.textBaseline = 'bottom';
         ctx.fillText(label, w - pad.r - 4, Y(tau) - 4);
     }
 
     if (!s.gains.length) {
-        ctx.fillStyle = MUTED;
+        ctx.fillStyle = C.muted;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.font = '13px "IBM Plex Sans", sans-serif';
@@ -569,6 +572,20 @@ document.addEventListener('keydown', e => {
     else if (e.key === 'ArrowRight') $('pbFwd').click();
     else if (e.key === 'ArrowLeft') $('pbBack').click();
 });
+
+// --- Theme ---
+function renderThemeButton() {
+    $('themeBtn').textContent = document.documentElement.dataset.theme === 'dark' ? 'Light' : 'Dark';
+}
+$('themeBtn').addEventListener('click', () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem('theme', next); } catch (e) { /* private mode: still switches */ }
+    readPalette();
+    renderThemeButton();
+    renderPanels();
+});
+renderThemeButton();
 
 // --- Run button / connection ---
 let wsOpen = false;

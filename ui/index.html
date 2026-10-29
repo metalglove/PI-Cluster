@@ -14,6 +14,17 @@
         rel="stylesheet">
 
     <link rel="stylesheet" href="/static/style.css">
+    <script>
+        // Pick the theme before first paint: saved choice, else the OS setting.
+        (function () {
+            var t = null;
+            try { t = localStorage.getItem('theme'); } catch (e) { }
+            if (t !== 'light' && t !== 'dark') {
+                t = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+            document.documentElement.dataset.theme = t;
+        })();
+    </script>
 </head>
 
 <body>
@@ -34,6 +45,7 @@
                 <label><input type="radio" name="jobSize" value="large"><span>100K pts</span></label>
             </div>
             <button id="runBtn" class="btn btn-primary">Run on cluster</button>
+            <button id="themeBtn" class="btn theme-toggle" aria-label="Toggle dark mode">Dark</button>
             <div class="conn"><span class="dot" id="connDot"></span><span id="connText">Connecting</span></div>
         </div>
     </header>
