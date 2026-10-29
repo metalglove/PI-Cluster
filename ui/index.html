@@ -120,11 +120,28 @@
                     <h2>Work on the cluster</h2>
                     <p class="hint" id="roundHint">Each round, Spark splits the remaining candidate circles into partitions and the Pis score them at the same time.</p>
                 </div>
-                <div class="round-count">
-                    <span class="big" id="roundCount">0</span>
-                    <span id="roundLabel">rounds (Spark jobs) so far</span>
-                </div>
             </div>
+
+            <dl class="ledger">
+                <div>
+                    <dt>Rounds</dt>
+                    <dd id="roundCount">0</dd>
+                    <small id="roundLabel"></small>
+                </div>
+                <div>
+                    <dt>Most circles on one machine in a round</dt>
+                    <dd id="maxLoad">–</dd>
+                    <small>memory per machine</small>
+                </div>
+                <div>
+                    <dt>Circles sent to the driver</dt>
+                    <dd id="sentTotal">–</dd>
+                    <small>communication</small>
+                </div>
+            </dl>
+
+            <div class="strip-wrap"><canvas id="roundStrip" aria-label="Rounds of this run; click one to jump to it"></canvas></div>
+            <p class="hint strip-caption">Every round of this run, stacked by machine. Solid = done, outline = still to come, dashed = runs on the central machine only. Click a round to jump to it.</p>
 
             <div class="share" id="share" aria-label="Share of all candidate checks per Pi"></div>
             <div class="share-caption" id="shareCaption"></div>

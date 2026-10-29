@@ -107,6 +107,8 @@ function emptyState() {
         roundSeq: 0,          // ROUND events so far (a round can span two events)
         lastRound: null,
         machineTotals: {},    // machine key -> candidates scored, all rounds
+        maxLoad: 0,           // most circles one machine handled in one round (MPC: memory per machine)
+        sentTotal: 0,         // circles sent to the driver / central machine (MPC: communication)
         machineNames: {},     // machine key -> {host, ip}
         guesses: [],          // {algo, j, tau, picks, coverage, gains}
         bestGuess: null,
@@ -119,7 +121,7 @@ function emptyState() {
 
 let state = emptyState();
 
-function reduce(s, e) {
+function reduce(s, e, index) {
     switch (e.type) {
         case 'INIT': {
             const fresh = emptyState();
@@ -155,12 +157,15 @@ function reduce(s, e) {
             // Theorem 8 numbers its rounds (both algorithms share rounds 1 and 2); greedy just counts.
             s.rounds = e.round ? Math.max(s.rounds, e.round) : s.rounds + 1;
             s.roundSeq += 1;
-            s.lastRound = { ...e, number: e.round || s.rounds, seq: s.roundSeq };
+            s.lastRound = { ...e, number: e.round || s.rounds, seq: s.roundSeq, timelineIndex: index };
             for (const p of e.partitions) {
                 const key = machineKey(p);
                 if (!e.central) s.machineTotals[key] = (s.machineTotals[key] || 0) + (p.evaluated ?? p.held);
                 s.machineNames[key] = { host: p.host, ip: p.ip };
             }
+            const cost = roundCost(e);
+            s.maxLoad = Math.max(s.maxLoad, ...Object.values(cost.load));
+            s.sentTotal += cost.sent;
             if (e.kind in TWO_ROUND_TEXT) {
                 if (e.sent_circles) {
                     s.background = e.sent_circles.map(c => ({ ...c, machine: machineKey(c) }));
@@ -286,6 +291,20 @@ function reduce(s, e) {
     }
 }
 
+// The MPC view of one round: circles each machine handled, and circles sent to the driver.
+// Greedy collects every candidate that clears τ (it then takes the first); the oracle round
+// collects every score. Theorem 8's round 1 sends Rᵢ or the top 2k; its round 2 sends nothing.
+function roundCost(e) {
+    const load = {};
+    let sent = 0;
+    for (const p of e.partitions) {
+        const key = machineKey(p);
+        load[key] = (load[key] || 0) + (p.evaluated ?? p.held ?? 0);
+        if (!e.central) sent += p.sent_distinct ?? p.sent ?? p.passed ?? 0;
+    }
+    return { load, sent };
+}
+
 // What the page says for each of Theorem 8's rounds: {lines, now} merged into the state.
 const TWO_ROUND_TEXT = {
     alg6_r1: e => {
@@ -338,10 +357,10 @@ function seek(target) {
     target = Math.max(-1, Math.min(timeline.length - 1, target));
     if (target === cursor + 1) {
         cursor = target;
-        reduce(state, timeline[cursor]);   // one step forward: let the new circle grow in
+        reduce(state, timeline[cursor], cursor);   // one step forward: let the new circle grow in
     } else {
         state = emptyState();
-        for (let i = 0; i <= target; i++) reduce(state, timeline[i]);
+        for (let i = 0; i <= target; i++) reduce(state, timeline[i], i);
         state.circles.forEach(c => { c.animR = c.r; });
         cursor = target;
     }
@@ -396,8 +415,9 @@ function rememberRun(final) {
     const rounds = timeline.filter(e => e.type === 'ROUND')
         .reduce((n, e) => e.round ? Math.max(n, e.round) : n + 1, 0);
     const runs = loadRuns();
+    const sent = timeline.filter(e => e.type === 'ROUND').reduce((n, e) => n + roundCost(e).sent, 0);
     runs[algorithm] = {
-        coverage: final.coverage, total: final.total_points, rounds,
+        coverage: final.coverage, total: final.total_points, rounds, sent,
         elapsed: final.elapsed_s ?? null
     };
     try { localStorage.setItem('lastRuns', JSON.stringify(runs)); } catch (e) { /* comparison is optional */ }
@@ -409,7 +429,8 @@ function renderCompare() {
         const r = runs[a];
         const time = r.elapsed !== null ? ` · ${fmt(Math.round(r.elapsed))} s` : '';
         return `<div><b>${ALGORITHMS[a].name}</b><span>${fmt(r.coverage)} / ${fmt(r.total)} pts · ` +
-            `${r.rounds} round${r.rounds === 1 ? '' : 's'}${time}</span></div>`;
+            `${r.rounds} round${r.rounds === 1 ? '' : 's'}` +
+            `${r.sent !== undefined ? ` · ${fmt(r.sent)} sent` : ''}${time}</span></div>`;
     });
     $('compare').innerHTML = rows.length ? `<div>Last runs</div>${rows.join('')}` : '';
 }
@@ -426,6 +447,8 @@ function shownAlgorithm() {
 
 let renderedCode = null;
 function renderCode(algorithm) {
+    // Keep the switch on the algorithm being shown, so the header never contradicts the page.
+    if (state.config) document.querySelector(`input[name="algorithm"][value="${algorithm}"]`).checked = true;
     if (renderedCode === algorithm) return;
     renderedCode = algorithm;
     const a = ALGORITHMS[algorithm];
@@ -508,7 +531,9 @@ function renderCluster() {
     const round = s.lastRound;
     $('roundCount').textContent = s.rounds;
     $('roundLabel').textContent = shownAlgorithm() === 'theorem8'
-        ? 'MapReduce rounds (Algorithms 6 and 7 share them)' : 'rounds (Spark jobs) so far';
+        ? 'Algorithms 6 and 7 share them' : 'one Spark job per pick, about k·log k / ε';
+    $('maxLoad').textContent = s.maxLoad ? fmt(s.maxLoad) : '–';
+    $('sentTotal').textContent = s.rounds ? fmt(s.sentTotal) : '–';
 
     if (round) {
         const what = {
@@ -636,6 +661,7 @@ function renderPlayback() {
     $('pbStart').disabled = cursor < 0;
     $('pbFwd').disabled = cursor >= n - 1;
     $('pbEnd').disabled = cursor >= n - 1;
+    drawRoundStrip();
 }
 
 // --- Rendering: canvases ---
@@ -812,6 +838,92 @@ function niceStep(raw) {
     const m = raw / p;
     return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
 }
+
+// --- Round strip: one column per Spark job / round, stacked by machine ---
+// Built from the whole timeline so the layout stays put while stepping; rounds after the
+// playhead are drawn as outlines, so the class sees how many are still to come.
+const stripCanvas = $('roundStrip');
+let stripColumns = [];   // [{x, w, index}] for click-to-seek
+
+function drawRoundStrip() {
+    const { ctx, w, h } = setupCanvas(stripCanvas);
+    ctx.clearRect(0, 0, w, h);
+    const rounds = [];
+    let guess = null;
+    timeline.forEach((e, i) => {
+        if (e.type === 'START_GUESS') guess = e.value;
+        if (e.type === 'ROUND') rounds.push({ e, i, guess, cost: roundCost(e) });
+    });
+    stripColumns = [];
+    if (!rounds.length) {
+        ctx.fillStyle = C.muted;
+        ctx.font = '13px "IBM Plex Sans", sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Each round of the run will appear here as a column.', 0, h / 2);
+        return;
+    }
+    const two = rounds.some(r => r.e.round);
+    const labelH = 18;
+    const top = 6, base = h - labelH;
+    const gap = rounds.length > 60 ? 1 : 4;
+    const colW = Math.max(2, Math.min(two ? 90 : 26, (w - gap * (rounds.length - 1)) / rounds.length));
+    const maxTotal = Math.max(1, ...rounds.map(r => Object.values(r.cost.load).reduce((a, b) => a + b, 0)));
+    const Y = v => (v / maxTotal) * (base - top);
+
+    ctx.font = '11px "IBM Plex Mono", monospace';
+    ctx.textBaseline = 'top';
+    let lastGuess = undefined;
+    let lastLabelX = -Infinity;
+    rounds.forEach((r, n) => {
+        const x = n * (colW + gap);
+        const done = r.i <= cursor;
+        stripColumns.push({ x, w: colW + gap, index: r.i });
+        let y = base;
+        Object.entries(r.cost.load).forEach(([key, v]) => {
+            const hgt = Math.max(1, Y(v));
+            y -= hgt;
+            const color = colorFor(key);
+            if (r.e.central) {
+                ctx.setLineDash([3, 2]);
+                ctx.strokeStyle = done ? color : hexAlpha(color, 0.35);
+                ctx.strokeRect(x + 0.5, y + 0.5, colW - 1, hgt - 1);
+                ctx.setLineDash([]);
+            } else if (done) {
+                ctx.fillStyle = color;
+                ctx.fillRect(x, y, colW, hgt);
+            } else {
+                ctx.strokeStyle = hexAlpha(color, 0.35);
+                ctx.strokeRect(x + 0.5, y + 0.5, colW - 1, hgt - 1);
+            }
+        });
+        if (r.i === state.lastRound?.timelineIndex) {
+            ctx.fillStyle = C.ink;
+            ctx.fillRect(x, base + 2, colW, 2);
+        }
+        // Labels: Theorem 8 names each round; greedy marks where each guess starts.
+        ctx.fillStyle = C.muted;
+        if (two) {
+            ctx.textAlign = 'center';
+            const label = `${r.e.algo === 'alg6' ? 'Alg 6' : 'Alg 7'} · R${r.e.round}`;
+            if (colW > 50) ctx.fillText(label, x + colW / 2, base + 5);
+        } else if (r.guess !== lastGuess && r.guess !== null && r.guess !== undefined) {
+            ctx.textAlign = 'left';
+            ctx.fillRect(x, base + 2, 1, 6);
+            if (x - lastLabelX > 38) {
+                ctx.fillText(`j=${r.guess}`, x + 2, base + 5);
+                lastLabelX = x;
+            }
+        }
+        lastGuess = r.guess;
+    });
+}
+
+stripCanvas.addEventListener('click', ev => {
+    const x = ev.clientX - stripCanvas.getBoundingClientRect().left;
+    const col = stripColumns.find(c => x >= c.x && x < c.x + c.w);
+    if (col) { setPlaying(false); seek(col.index); }
+});
+window.addEventListener('resize', drawRoundStrip);
 
 function frame() {
     drawFigure();
