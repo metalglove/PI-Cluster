@@ -46,7 +46,7 @@ def threshold_filter_local(candidates: List[Circle], current_solution: List[Circ
 # DRIVER HELPERS 
 # =============================================================================
 
-def algorithm_3_partition_and_sample(sc: SparkContext, circles: list[Circle], k: int, seed: int = 42, cluster_mode=False) -> Tuple[RDD[Circle], Broadcast[List[Circle]]]:
+def algorithm_3_partition_and_sample(sc: SparkContext, circles: list[Circle], k: int, seed: int = 42, num_machines: int = 8) -> Tuple[RDD[Circle], Broadcast[List[Circle]]]:
     """
     Algorithm 3: PartionAndSample(V)
     1. Sample S subset of V by including each element with probability p = min(1, 4 * sqrt(k / n))
@@ -65,10 +65,10 @@ def algorithm_3_partition_and_sample(sc: SparkContext, circles: list[Circle], k:
 
     # NOTE: in an ideal scenario we would have m machines and partition V into m random subsets.
     # however, in Spark we can just parallelize the data over a number of partitions (e.g., in essence machines/cores)
-    # considering we are running on a raspberrypi cluster with total 8 cores per machine and 2 machines, 
-    # we can use 16 partitions to simulate the distributed environment.
-    # as m is O(sqrt(k/n)), it will be small for large n, so we can just use a fixed number of partitions that is >= m.
-    circles_rdd = sc.parallelize(circles, 16 if cluster_mode else 8) # m
+    # main.py picks the number of partitions (num_machines) from the input alone, not from the hardware,
+    # so the partition and the result are the same whether 1, 2 or 3 Pis run it; with fewer cores than
+    # partitions, a core simply works through several machines' partitions one after the other.
+    circles_rdd = sc.parallelize(circles, num_machines) # m
 
     # we sample each element from V independently with probability p to form S.
     S = circles_rdd.sample(False, p, seed).collect()
@@ -78,3 +78,12 @@ def algorithm_3_partition_and_sample(sc: SparkContext, circles: list[Circle], k:
     
     # the expected size of S is p * n_circles, which is O(sqrt(k * n_circles)) as per paper.
     return circles_rdd, S_bc
+
+def in_machine_order(unions: dict, circles: List[Circle]) -> dict:
+    """
+    The union of all Ri reaches the central machine in whatever order the machines finish (reduceByKey).
+    Put each union back in machine order: the order of V, which sc.parallelize slices into the partitions.
+    The greedy over the union then picks the same circles however many Pis ran the machines, and on every run.
+    """
+    position = {c: i for i, c in enumerate(circles)}
+    return {key: sorted(R, key=position.__getitem__) for key, R in unions.items()}

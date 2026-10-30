@@ -45,6 +45,9 @@
                     <option>1</option><option selected>2</option><option>3</option><option>4</option>
                 </select>
             </label>
+            <label class="t-picker" id="hwPicker" hidden><span id="hwLabel">Pis</span> =
+                <select id="hwSelect" aria-label="How many Pis (or cores) to run on"></select>
+            </label>
             <div class="segmented" role="radiogroup" aria-label="Dataset size">
                 <label><input type="radio" name="jobSize" value="small" checked><span>2K pts</span></label>
                 <label><input type="radio" name="jobSize" value="medium"><span>25K pts</span></label>
@@ -52,6 +55,7 @@
             </div>
             <button id="runBtn" class="btn btn-primary">Run on cluster</button>
             <button id="compareBtn" class="btn">Compare</button>
+            <button id="analysisBtn" class="btn" title="Run every algorithm on 1, 2, … all Pis and compare the wall times">Full analysis</button>
             <button id="presentBtn" class="btn" title="Full screen, larger text (P)">Present</button>
             <button id="themeBtn" class="btn theme-toggle" aria-label="Toggle dark mode">Dark</button>
             <div class="conn"><span class="dot" id="connDot"></span><span id="connText">Connecting</span></div>
@@ -175,6 +179,14 @@
                 <button class="btn" id="cvClose">Close (Esc)</button>
             </div>
             <div class="cv-cols" id="cvCols"></div>
+            <section class="cv-scaling" id="cvScaling">
+                <h3 id="cvScalingTitle">Speedup with more Pis</h3>
+                <p class="hint" id="cvScalingLede"></p>
+                <div class="scaling-grid">
+                    <div class="scaling-scroll"><table class="scaling-table" id="scalingTable"></table></div>
+                    <canvas class="scaling-chart" id="scalingChart" aria-label="Speedup per algorithm against the number of Pis"></canvas>
+                </div>
+            </section>
         </div>
     </div>
 

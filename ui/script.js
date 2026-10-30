@@ -1222,7 +1222,166 @@ async function showCompare(on) {
         drawMiniFigure($(`cvFig-${a}`), r);
         drawStrip($(`cvStrip-${a}`), r.events, r.events.length, { slots });
     }
+    await refreshAnalysis();
 }
+
+// --- Speedup: the same run on more Pis (or cores) ---
+// m, the number of machines (partitions), depends only on the input, so every hardware size gives the
+// same answer and only the wall time changes. A full analysis runs every algorithm on 1, 2, ... N.
+let analysis = { running: false, plan: [], done: 0, results: [] };
+let hw = { unit: 'pis', max: 0 };   // what the next run can use, from /cluster-status
+let hwTouched = false;               // keep the user's pick across polls
+
+const unitName = (unit, n) => unit === 'pis' ? (n === 1 ? 'Pi' : 'Pis') : (n === 1 ? 'core' : 'cores');
+
+async function refreshAnalysis() {
+    const wasRunning = analysis.running;
+    try { analysis = await (await fetch('/analysis')).json(); } catch (e) { return; }
+    renderAnalysisButton();
+    if (wasRunning && !analysis.running) showCompare(true);   // finished: show the result
+    else if (!$('compareView').hidden) renderScaling();
+}
+
+function renderAnalysisButton() {
+    const btn = $('analysisBtn');
+    btn.textContent = analysis.running ? `Stop analysis (${analysis.done + 1} of ${analysis.plan.length})` : 'Full analysis';
+    btn.disabled = !wsOpen || (!analysis.running && runInProgress());
+}
+
+$('analysisBtn').addEventListener('click', async () => {
+    try {
+        if (analysis.running) {
+            await fetch('/analysis/stop', { method: 'POST' });
+        } else {
+            const size = document.querySelector('input[name="jobSize"]:checked').value;
+            await fetch('/analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ size, t: selectedT() })
+            });
+        }
+    } catch (e) {
+        console.error('Analysis request failed', e);
+    }
+    refreshAnalysis();
+});
+
+function renderHwPicker() {
+    $('hwPicker').hidden = !hw.max;
+    $('hwLabel').textContent = hw.unit === 'pis' ? 'Pis' : 'Cores';
+    const sel = $('hwSelect');
+    const current = hwTouched ? Number(sel.value) : hw.max;
+    if (sel.options.length !== hw.max) {
+        sel.innerHTML = Array.from({ length: hw.max }, (_, i) => `<option>${i + 1}</option>`).join('');
+    }
+    sel.value = String(Math.min(current || hw.max, hw.max));
+}
+$('hwSelect').addEventListener('change', () => { hwTouched = true; });
+
+// The finished runs to compare: the dataset size picked in the header, and the t picked for Algorithm 5.
+let sizeTouched = false;   // after the user picks a size, show that one instead of the last analysis'
+document.querySelectorAll('input[name="jobSize"]').forEach(r => r.addEventListener('change', () => {
+    sizeTouched = true;
+    if (!$('compareView').hidden) renderScaling();
+}));
+
+function scalingRows() {
+    const size = analysis.size && (analysis.running || !sizeTouched) ? analysis.size
+        : document.querySelector('input[name="jobSize"]:checked').value;
+    const t = analysis.running ? analysis.t : selectedT();
+    const runs = (analysis.results || []).filter(r =>
+        (r.dataset || '').startsWith(size + '/') && (r.algorithm !== 'alg5' || r.t === t));
+    const unit = runs.some(r => r.unit === 'pis') ? 'pis' : 'cores';
+    const mine = runs.filter(r => r.unit === unit);
+    const sizes = [...new Set(mine.map(r => r.parallel))].sort((a, b) => a - b);
+    const rows = Object.keys(ALGORITHMS).map(a => {
+        const byN = new Map(mine.filter(r => r.algorithm === a).map(r => [r.parallel, r]));
+        const base = sizes.map(n => byN.get(n)).find(Boolean);
+        return { algorithm: a, byN, base };
+    }).filter(r => r.byN.size);
+    return { size, t, unit, sizes, rows };
+}
+
+function renderScaling() {
+    const { size, t, unit, sizes, rows } = scalingRows();
+    $('cvScalingTitle').textContent = `Speedup with more ${unit === 'pis' ? 'Pis' : 'cores'}`;
+    const progress = analysis.running
+        ? ` Full analysis running: run ${analysis.done + 1} of ${analysis.plan.length}` +
+          (analysis.current ? ` (${ALGORITHMS[analysis.current.algorithm].name} on ${analysis.current.parallel} ` +
+              `${unitName(analysis.unit, analysis.current.parallel)})` : '') + '.'
+        : '';
+    $('cvScalingLede').textContent = !rows.length
+        ? `No timed runs on the ${size} dataset yet. Press Full analysis to run every algorithm on 1, 2, … all ` +
+          `${unit === 'pis' ? 'Pis' : 'cores'}, or pick a number in the header and run one.` + progress
+        : `Wall time on the ${size} dataset, and the speedup over the fewest ${unit === 'pis' ? 'Pis' : 'cores'} timed. ` +
+          `The partition into machines depends only on the input, so every column finds the same solution.` + progress;
+
+    const head = `<thead><tr><th>Algorithm</th>${sizes.map(n => `<th>${n} ${unitName(unit, n)}</th>`).join('')}` +
+        `<th>Points covered</th></tr></thead>`;
+    const body = rows.map(r => {
+        const cells = sizes.map(n => {
+            const run = r.byN.get(n);
+            if (!run) return `<td>–</td>`;
+            const speedup = r.base.elapsed_s / run.elapsed_s;
+            return `<td>${run.elapsed_s.toFixed(1)} s<br><small>${speedup.toFixed(2)}×</small></td>`;
+        }).join('');
+        const covs = [...new Set([...r.byN.values()].map(x => x.coverage))];
+        const cov = covs.length === 1 ? fmt(covs[0]) : `<span class="warn">differs: ${covs.map(fmt).join(' / ')}</span>`;
+        const name = ALGORITHMS[r.algorithm].name + (r.algorithm === 'alg5' ? `, t = ${t}` : '');
+        return `<tr><td>${name}</td>${cells}<td>${cov}</td></tr>`;
+    }).join('');
+    $('scalingTable').innerHTML = rows.length ? head + `<tbody>${body}</tbody>` : '';
+    $('scalingChart').hidden = sizes.length < 2;
+    if (sizes.length >= 2) drawScalingChart($('scalingChart'), unit, sizes, rows);
+}
+
+// Speedup against hardware size, one line per algorithm, with the ideal (linear) speedup dashed.
+function drawScalingChart(canvas, unit, sizes, rows) {
+    const { ctx, w, h } = setupCanvas(canvas);
+    ctx.clearRect(0, 0, w, h);
+    const pad = { l: 40, r: 12, t: 12, b: 36 };
+    const iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+    const lo = sizes[0], hi = sizes[sizes.length - 1];
+    const speedups = rows.flatMap(r => [...r.byN.values()].map(x => r.base.elapsed_s / x.elapsed_s));
+    const top = Math.max(hi / lo, ...speedups) * 1.05;
+    const X = n => pad.l + ((n - lo) / (hi - lo)) * iw;
+    const Y = v => pad.t + ih - (v / top) * ih;
+
+    ctx.font = '11px ' + getComputedStyle(document.body).fontFamily;
+    ctx.lineWidth = 1;
+    for (let v = 0; v <= top; v += top > 6 ? 2 : 1) {
+        ctx.strokeStyle = v === 0 ? C.ruleStrong : C.rule;
+        ctx.beginPath(); ctx.moveTo(pad.l, Y(v)); ctx.lineTo(pad.l + iw, Y(v)); ctx.stroke();
+        ctx.fillStyle = C.muted; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+        ctx.fillText(`${v}×`, pad.l - 6, Y(v));
+    }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    sizes.forEach(n => ctx.fillText(String(n), X(n), pad.t + ih + 6));
+    ctx.fillText(unit === 'pis' ? 'Pis' : 'cores', pad.l + iw / 2, pad.t + ih + 20);
+
+    // ideal: twice the hardware, twice as fast
+    ctx.strokeStyle = C.muted; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(X(lo), Y(1)); ctx.lineTo(X(hi), Y(hi / lo)); ctx.stroke();
+    ctx.setLineDash([]);
+
+    const labels = [];
+    rows.forEach((r, i) => {
+        const color = C.machines[i % C.machines.length];
+        const pts = sizes.filter(n => r.byN.has(n)).map(n => [X(n), Y(r.base.elapsed_s / r.byN.get(n).elapsed_s)]);
+        ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
+        ctx.beginPath(); pts.forEach(([x, y], j) => j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+        pts.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); });
+        const [lx, ly] = pts[pts.length - 1];
+        labels.push({ text: ALGORITHMS[r.algorithm].name, color, x: lx - 6, y: ly - 6 });
+    });
+    // labels at the lines' ends, pushed apart so close lines stay readable
+    labels.sort((a, b) => a.y - b.y);
+    labels.forEach((l, i) => { if (i && l.y - labels[i - 1].y < 14) l.y = labels[i - 1].y + 14; });
+    ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+    ctx.lineWidth = 4; ctx.lineJoin = 'round'; ctx.strokeStyle = C.surface;   // a halo keeps them clear of the lines
+    labels.forEach(l => { ctx.strokeText(l.text, l.x, l.y); ctx.fillStyle = l.color; ctx.fillText(l.text, l.x, l.y); });
+}
+
 $('compareBtn').addEventListener('click', () => showCompare(true));
 $('cvClose').addEventListener('click', () => showCompare(false));
 $('compareView').addEventListener('click', e => { if (e.target === $('compareView')) showCompare(false); });
@@ -1251,7 +1410,7 @@ function runInProgress() {
 }
 
 function renderRunButton() {
-    const busy = submitting || runInProgress() || appState === 'WAITING';
+    const busy = submitting || runInProgress() || appState === 'WAITING' || analysis.running;
     const btn = $('runBtn');
     btn.disabled = busy || !wsOpen;
     btn.textContent = appState === 'WAITING' ? 'Waiting for cores…' : busy ? 'Running…' : 'Run on cluster';
@@ -1259,6 +1418,7 @@ function renderRunButton() {
     const dot = $('connDot');
     dot.className = 'dot ' + (!wsOpen ? 'bad' : busy ? 'busy' : 'ok');
     $('connText').textContent = !wsOpen ? 'Disconnected' : busy ? 'Job running' : 'Connected';
+    renderAnalysisButton();
 }
 
 $('runBtn').addEventListener('click', async () => {
@@ -1269,7 +1429,8 @@ $('runBtn').addEventListener('click', async () => {
         const res = await fetch('/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ size, algorithm: selectedAlgorithm(), t: selectedT() })
+            body: JSON.stringify({ size, algorithm: selectedAlgorithm(), t: selectedT(),
+                                   parallel: Number($('hwSelect').value) || null })
         });
         const data = await res.json();
         if (data.status !== 'started') console.error('Run failed', data);
@@ -1309,6 +1470,9 @@ async function pollCluster() {
         const res = await fetch('/cluster-status');
         const data = await res.json();
         clusterWorkers = data.status === 'error' ? [] : (data.workers || []);
+        hw = data.is_pi_cluster
+            ? { unit: 'pis', max: clusterWorkers.filter(w => w.state === 'ALIVE').length }
+            : { unit: 'cores', max: data.local_cores || 0 };
         // greedy runs as "CircleCover", theorem8 and alg5 as "CircleCoverMR"
         const mine = (data.activeapps || []).find(a => a.name.startsWith('CircleCover'));
         appState = mine ? mine.state : null;
@@ -1317,6 +1481,8 @@ async function pollCluster() {
         appState = null;
     }
     renderCluster();
+    renderHwPicker();
+    await refreshAnalysis();
     renderRunButton();
 }
 
