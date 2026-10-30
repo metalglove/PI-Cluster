@@ -19,5 +19,6 @@ htmlcov/
 .DS_Store
 .claude
 theory/
-old/spark-temp/
+old/
+spark-temp/
 checkpoints/
