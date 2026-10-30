@@ -1,13 +1,15 @@
-# Circle Cover Problem - PySpark Implementation
+# Circle cover on a Raspberry Pi cluster
 
-Distributed algorithms for the circle cover problem, implemented with Apache Spark and run on a Raspberry Pi cluster. `main.py` starts every run and picks the algorithm with `--algorithm`:
+Distributed algorithms for the circle cover problem, written with Apache Spark and run on a Raspberry Pi cluster, with a live dashboard that shows how the work is split across the Pis. It is built for teaching: the dashboard steps through every round, shows each algorithm's pseudocode next to what it is doing, and compares algorithms and cluster sizes side by side.
 
-- **`greedy`** (`algorithms/greedy.py`, default): sequential greedy thresholding with a **1/2(1-ε) approximation guarantee**, with each greedy step parallelized over Spark.
-- **`theorem8`** and **`alg5`** (`algorithms/`): the MapReduce algorithms from Liu & Vondrák, [*Submodular Optimization in the MapReduce Model*](https://arxiv.org/abs/1810.01489) (SOSA 2019), which need only a constant number of rounds.
+`main.py` starts every run and picks the algorithm with `--algorithm`:
 
-All of them are wired to the visualization dashboard.
+- **`greedy`** (default): sequential greedy thresholding with a **1/2(1-ε) approximation guarantee**. Each greedy step is parallelized over Spark, so a run needs many rounds.
+- **`theorem8`** and **`alg5`**: the MapReduce algorithms from Liu & Vondrák, [*Submodular Optimization in the MapReduce Model*](https://arxiv.org/abs/1810.01489) (SOSA 2019), which need only a constant number of rounds.
 
-## Algorithm
+![Threshold greedy running on two Raspberry Pis, in dark mode](docs/cluster-greedy.png)
+
+## Algorithms
 
 The circle cover problem is a geometric variant of set cover: given a set of points P and candidate circles C, find k circles that cover the maximum number of points. The coverage function is monotone submodular, so submodular maximization algorithms apply.
 
@@ -44,54 +46,90 @@ All of them build on Algorithm 1 (ThresholdGreedy), Algorithm 2 (ThresholdFilter
 | 2 | 6 | 0.556 |
 | 3 | 8 | 0.578 |
 
-![Visualization Dashboard](docs/visualization_screenshot.png)
+## The dashboard
 
-## Quick Start
+![Algorithm 5 on the medium dataset: the chosen circles, the marginal gain of each pick and the pseudocode](docs/dashboard.png)
 
-### Local Mode (Windows/Linux)
+- **Step through a run.** Every Spark round is an event on a timeline. Play, pause, step, scrub, or jump to a guess or round. The pseudocode highlights the line being executed.
+- **See the work on the cluster.** Each round is drawn per Pi and per partition: how many circles each machine checked, what it sent to the driver, and which Pi found each chosen circle.
+
+  ![Work on the cluster: every round stacked by machine, and each Pi's partitions](docs/cluster-work.png)
+
+- **Compare algorithms.** *Compare* shows the latest run of each algorithm on the same input: coverage, rounds, wall time, Spark jobs, communication and the largest load on one machine.
+
+  ![Compare: the same points solved by threshold greedy, Theorem 8 and Algorithm 5](docs/compare.png)
+
+- **Choose how many Pis.** The *Pis* picker in the header runs the next job on 1, 2, … all of the cluster's workers (*Cores* when running locally).
+- **Full analysis.** Runs every algorithm on 1, 2, … N Pis, one run after another. While it runs, the run controls are locked (only *Stop analysis* works) and a queue under the header shows which runs are done, which one is running and what comes next.
+
+  ![A full analysis in progress: the queue of runs and the locked controls](docs/analysis-queue.png)
+
+  When it finishes, *Compare* gets a speedup section: a summary of what more hardware bought each algorithm and how the MapReduce algorithms compare with greedy, a bar per run split into work on the machines and coordination, a table with speedup, efficiency, rounds and coverage, and a short explanation of why the speedup is not linear. Every column finds the same solution, so the only thing that changes is the wall time.
+
+  ![Speedup section of Compare after a full analysis](docs/speedup.png)
+
+  The paper's m machines are Spark partitions, with m = ⌈√(n/k)⌉ (8 for small, 15 for medium, 23 for large). m depends only on the input, not on the hardware, so adding Pis runs the same partitions side by side instead of one after another. The union of the machines' filtered circles is put back in machine order before the central greedy, so it does not depend on which Pi finishes first either. The threshold greedy barely speeds up: it needs one Spark job per pick (~130 rounds on medium), and each round pays a fixed coordination cost (scheduling the job, sending the current solution, collecting the answer) that more Pis do not shrink. The work part of each bar is the slowest machine per round, summed over the rounds; the rest of the wall time is coordination. That is the point the 2-round algorithms make.
+
+- **Present mode** (P) for a projector, chapters ([ ] or PageUp/PageDown for clickers), and a light and dark theme.
+
+## Quick start
+
+### Local mode (Windows/macOS/Linux)
 
 ```bash
 # Create virtual environment
 python -m venv .venv
 .venv/Scripts/activate  # Windows
-source .venv/bin/activate  # Linux
+source .venv/bin/activate  # Linux/macOS
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Run locally with small dataset
+# Run the threshold greedy on the small dataset
 python main.py --size small
 
-# Run with visualization server (in separate terminals)
-python viz_server.py  # Terminal 1
-python main.py --ui-url http://localhost:8000 --size medium  # Terminal 2
-python main.py --ui-url http://localhost:8000 --size medium --algorithm theorem8   # or the 2-round algorithm
-# (or pick the algorithm and size in the UI and press "Run on cluster")
-
-# Run the paper's 2-round algorithm (Theorem 8: Algorithms 6 + 7)
+# The paper's 2-round algorithm (Theorem 8: Algorithms 6 + 7)
 python main.py --algorithm theorem8 --size small
 
-# Run the paper's Algorithm 5 with t thresholds (2t + 2 rounds)
-python main.py --algorithm alg5 --t 3 --size small
+# The paper's Algorithm 5 with t thresholds (2t + 2 rounds), on 2 cores
+python main.py --algorithm alg5 --t 3 --size small --cores 2
+
+# With the dashboard (in separate terminals)
+python viz_server.py                                          # Terminal 1, then open http://localhost:8000
+python main.py --ui-url http://localhost:8000 --size medium   # Terminal 2
+# (or pick the algorithm, size and cores in the dashboard and press "Run on cluster")
 ```
 
-### Cluster Mode (Raspberry Pi)
+### Cluster mode (Raspberry Pi)
 
 ```bash
-# SSH to master node
 ssh pi@raspberrypi
 
-# Run on cluster
+# All alive workers
 ~/spark-env/bin/python ~/main.py --cluster --size medium
+~/spark-env/bin/python ~/main.py --cluster --algorithm theorem8 --size large
 
-# Run the paper's algorithms on the cluster
-~/spark-env/bin/python ~/main.py --cluster --algorithm theorem8 --size medium
-~/spark-env/bin/python ~/main.py --cluster --algorithm alg5 --t 2 --size medium
+# Only 2 of the Pis
+~/spark-env/bin/python ~/main.py --cluster --algorithm alg5 --t 2 --size large --pis 2
 ```
+
+With `--pis N`, the job asks the master for N × 4 cores in 4-core executors, so the master places them on N different Pis (it chooses which ones). The job waits up to 60 s for all of them to join before the first round.
+
+### Command-line options
+
+| Option | Values | Default |
+|--------|--------|---------|
+| `--algorithm` | `greedy`, `theorem8`, `alg5` | `greedy` |
+| `--size` | `small` (2K points, 500 circles), `medium` (25K, 2,000), `large` (100K, 5,000) | `small` |
+| `--t` | number of thresholds for Algorithm 5 | `2` |
+| `--cluster` | flag: run on the Pi cluster instead of locally | off |
+| `--pis` | cluster mode: number of Pis to run on | all alive workers |
+| `--cores` | local mode: number of cores to run on | all |
+| `--ui-url` | URL of the dashboard server | off |
 
 ---
 
-## Raspberry Pi Cluster
+## Raspberry Pi cluster
 
 ### Cluster Information
 
@@ -144,120 +182,48 @@ ssh pi@applepi "jps"
 ssh pi@raspberrypi "tail -50 ~/spark/logs/spark-pi-org.apache.spark.deploy.master.Master-1-raspberrypi.out"
 ```
 
-### Deploy Application
+### Deploy
 
 ```bash
-# Copy scripts to Pi (or run deploy.sh). Only the master needs them: main.py ships
-# the modules to the workers at start-up.
-scp main.py data.py oracle.py viz_client.py pi@raspberrypi:~/
-scp -r algorithms pi@raspberrypi:~/
-
-# Run on cluster (without visualization)
-ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --size medium"
-
-# Run with visualization (requires viz_server running)
-ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --ui-url http://127.0.0.1:8000 --size large"
-
-# Or run directly from the UI dashboard (recommended)
-# Navigate to http://raspberrypi:8000 and click "Run New Simulation"
+bash deploy.sh      # from Git Bash on Windows, or Linux/macOS
+.\deploy.ps1        # or from PowerShell
 ```
 
-### Visualization Dashboard
+The deploy scripts copy `main.py`, `data.py`, `oracle.py`, `viz_client.py`, `algorithms/`, `viz_server.py` and the dashboard to the master, then restart the dashboard server. Only the master needs the code: `main.py` zips its modules and ships them to the workers at start-up.
 
-The project includes a real-time web visualization dashboard with interactive controls.
-
-**Start the Server:**
-```bash
-ssh pi@raspberrypi
-# Start the visualization server (runs on port 8000)
-~/spark-env/bin/python ~/viz_server.py
-```
-
-**Run the Algorithm with Visualization:**
-```bash
-# In a separate terminal, run the algorithm with the --ui-url flag
-ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --ui-url http://127.0.0.1:8000 --size medium"
-```
-
-**Access the UI:**
-Open `http://raspberrypi:8000` in your browser.
-
-**Features:**
-- **Real-time Visualization**: See points and circles as they are covered during exploration.
-- **Final Solution Highlighting**: Best solution circles rendered in **gold** with enhanced glow, distinguishing them from intermediate guesses (cyan).
-- **Dataset Size Selection**: Choose from small (2K), medium (25K), or large (100K) point datasets.
-- **Smart Sampling**: Larger datasets send a uniform sample of 5,000 points to keep the UI fast.
-- **Cluster Control**: Start new simulations directly from the UI with customizable dataset sizes.
-- **Live Worker Stats**: Monitor core/memory usage of connected nodes in real-time.
-- **Algorithm Metrics**: Track marginal gain and total coverage graphs across all guesses.
-
-**What You'll See:**
-
-The visualization progresses through multiple threshold guesses (j=0 to log k):
-1. **Exploration phase** - Cyan circles appear as the algorithm tests different thresholds
-2. **Final result** - Screen clears and the **best solution** is displayed in **gold**
-3. Status shows: `FINAL SOLUTION: X% Coverage` with the winning guess number
+Then open `http://raspberrypi:8000`, pick an algorithm, a dataset size and the number of Pis, and press *Run on cluster*, or press *Full analysis*.
 
 ---
 
 ## Configuration
 
-### Dataset Size
-
-Choose from three predefined configurations via command line:
-
-```bash
-# Small dataset (2K points, 500 circles, 8 clusters)
-python main.py --size small
-
-# Medium dataset (25K points, 2K circles, 20 clusters)
-python main.py --size medium
-
-# Large dataset (100K points, 5K circles, 50 clusters)
-python main.py --size large
-```
-
-### Algorithm Parameters
-
-Edit in `main.py` (applies to all algorithms and sizes):
+`main.py` (applies to all algorithms and sizes):
 
 ```python
 K = 10              # Maximum circles to select
 EPSILON = 0.2       # Approximation parameter (affects # of guesses)
+SPARK_MASTER_URL = "spark://192.168.1.223:7077"
+SPARK_MASTER_UI = "http://192.168.1.223:8080/json/"
+CORES_PER_PI = 4
 ```
 
-and in `data.py`:
+`data.py`:
 
 ```python
-BOUNDS = (0, 0, 1000, 1000)    # Spatial bounds
+SIZE_CONFIGS = {...}            # points, circles and clusters per size
+BOUNDS = (0, 0, 1000, 1000)     # Spatial bounds
 RADIUS_RANGE = (30, 100)        # Circle radius range
 ```
 
-The command-line options are:
-
-| Option | Values | Default |
-|--------|--------|---------|
-| `--size` | `small`, `medium`, `large` | `small` |
-| `--cluster` | flag | off |
-| `--algorithm` | `greedy`, `theorem8`, `alg5` | `greedy` |
-| `--t` | number of thresholds for Algorithm 5 | `2` |
-| `--ui-url` | URL of the visualization server | off |
-
-### Cluster Settings
-
-```python
-SPARK_MASTER_URL = "spark://192.168.1.223:7077"
-```
-
-Or use `--cluster` flag to enable cluster mode (auto-detects Pi cluster environment).
+To run on another cluster, change the master IP in `main.py`, the host in `deploy.sh`/`deploy.ps1`, and the venv path in `viz_server.py`. See [CLUSTER_SETUP.md](CLUSTER_SETUP.md) for setting up the Pis.
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
 PI-Cluster/
-├── main.py              # Start-up: command line, Spark, data, UI, runs the chosen algorithm
+├── main.py              # Start-up: command line, Spark, data, dashboard, runs the chosen algorithm
 ├── data.py              # Dataset sizes and point/circle generation
 ├── oracle.py            # Coverage oracle f(S)
 ├── algorithms/
@@ -267,15 +233,13 @@ PI-Cluster/
 │   ├── alg6.py          # Algorithm 6 (dense inputs, 2 rounds)
 │   ├── alg7.py          # Algorithm 7 (sparse inputs, 2 rounds)
 │   └── theorem8.py      # Theorem 8 (Algorithms 6 + 7)
-├── viz_client.py        # Sends events to the visualization server
-├── viz_server.py        # Visualization backend (FastAPI)
-├── ui/                  # Frontend assets
-│   ├── index.html       # Dashboard UI
-│   ├── style.css        # Glassmorphism styles
-│   └── script.js        # Visualization logic
-├── requirements.txt     # Python dependencies
-├── README.md            # This file
-└── CLUSTER_SETUP.md     # Detailed cluster setup guide
+├── viz_client.py        # Sends events to the dashboard server
+├── viz_server.py        # Dashboard server (FastAPI): live events, runs, full analysis
+├── ui/                  # Dashboard (index.html, style.css, script.js)
+├── docs/                # Screenshots
+├── deploy.sh, deploy.ps1   # Copy everything to the master and restart the dashboard
+├── requirements.txt
+└── CLUSTER_SETUP.md     # Setting up the Pis
 ```
 
 ---

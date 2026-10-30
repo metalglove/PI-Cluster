@@ -10,7 +10,7 @@ import numpy as np
 
 from data import Point, Circle
 from oracle import compute_coverage
-from algorithms.building_blocks import threshold_greedy_local, threshold_filter_local, algorithm_3_partition_and_sample
+from algorithms.building_blocks import threshold_greedy_local, threshold_filter_local, algorithm_3_partition_and_sample, in_machine_order
 from viz_client import (UIClient, STATS_KEY, circle_payload, with_partition_stats,
                         central_stats, gains_in_order, solution_payload)
 
@@ -34,7 +34,7 @@ def initial_guess_v_S(sc: SparkContext, S_bc: Broadcast[List[Circle]], points_bc
 # ALGORITHM 6 (2-Round MapReduce)
 # =============================================================================
 
-def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False, ui: Optional[UIClient] = None):
+def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, num_machines: int = 8, ui: Optional[UIClient] = None):
     """
     Algorithm 6: A 1/2 - epsilon approximation for dense inputs in 2 rounds of MapReduce.
      - Round 1: Parallel Filtering
@@ -44,7 +44,7 @@ def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Poin
     """
     
     # partition and sample the circles to get S and the RDD for parallel processing.
-    circles_rdd, S_bc = algorithm_3_partition_and_sample(sc, circles, k, seed, cluster_mode)
+    circles_rdd, S_bc = algorithm_3_partition_and_sample(sc, circles, k, seed, num_machines)
     
     # NOTE: assumption that all points are broadcasted (or accessible via oracle) to all machines as per paper.
     points_bc = sc.broadcast(np.asarray(points, dtype=float))
@@ -97,6 +97,7 @@ def algorithm_6_dense(sc: SparkContext, circles: list[Circle], points: list[Poin
         .reduceByKey(add) \
         .collect())
     round1_stats = round1_aggregated_guesses.pop(STATS_KEY, [])
+    round1_aggregated_guesses = in_machine_order(round1_aggregated_guesses, circles)
     num_guesses = int(math.ceil((1.0 / epsilon) * math.log(k)))
 
     origin = {}

@@ -11,7 +11,7 @@ import numpy as np
 
 from data import Point, Circle
 from oracle import compute_coverage
-from algorithms.building_blocks import threshold_greedy_local, threshold_filter_local, algorithm_3_partition_and_sample
+from algorithms.building_blocks import threshold_greedy_local, threshold_filter_local, algorithm_3_partition_and_sample, in_machine_order
 from viz_client import (UIClient, STATS_KEY, circle_payload, with_partition_stats, split_partition_stats,
                         central_stats, gains_in_order)
 
@@ -19,7 +19,7 @@ from viz_client import (UIClient, STATS_KEY, circle_payload, with_partition_stat
 # ALGORITHM 5 (2t + 2 Rounds MapReduce)
 # =============================================================================
 
-def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, t: int, epsilon: float, seed: int = 42, cluster_mode: bool = False, ui: Optional[UIClient] = None):
+def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, t: int, epsilon: float, seed: int = 42, num_machines: int = 8, ui: Optional[UIClient] = None):
     """
     Algorithm 5: A 1 - (1 - 1/(t+1))^t approximation in 2t + 2 rounds of MapReduce.
      - Round 0: extra initial round to find the maximum-value element, which estimates OPT within a factor of k
@@ -40,14 +40,14 @@ def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: lis
         # same job, but each partition also reports its machine (via with_partition_stats).
         def partition_max(iterator):
             return [max((compute_coverage([c], points_bc.value) for c in iterator), default=0)]
-        round0 = sc.parallelize(circles, 16 if cluster_mode else 8) \
+        round0 = sc.parallelize(circles, num_machines) \
             .mapPartitionsWithIndex(with_partition_stats(partition_max, lambda item: [])) \
             .collect()
         partition_maxima, round0_stats = split_partition_stats(round0)
         v_max = max(partition_maxima)
         ui.send_partition_round("alg5_r0", round0_stats, algo="alg5", round=1, v=v_max)
     else:
-        v_max = sc.parallelize(circles, 16 if cluster_mode else 8) \
+        v_max = sc.parallelize(circles, num_machines) \
             .map(lambda c: compute_coverage([c], points_bc.value)) \
             .max()
 
@@ -70,7 +70,7 @@ def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: lis
         # ROUND 2l - 1: Parallel Filtering
         # -------------------------------------------------------------------------
         # a fresh random partition and sample for every threshold, as per paper.
-        circles_rdd, S_bc = algorithm_3_partition_and_sample(sc, circles, k, seed + l, cluster_mode)
+        circles_rdd, S_bc = algorithm_3_partition_and_sample(sc, circles, k, seed + l, num_machines)
         solutions_bc = sc.broadcast(solutions)
         if ui:
             ui.send("SAMPLE", {"algo": "alg5", "l": l, "circles": [circle_payload(c) for c in S_bc.value],
@@ -108,6 +108,7 @@ def algorithm_5_multi_round(sc: SparkContext, circles: list[Circle], points: lis
             .reduceByKey(add) \
             .collect())
         round1_stats = aggregated.pop(STATS_KEY, [])
+        aggregated = in_machine_order(aggregated, circles)
 
         if ui:
             origin = ui.send_partition_round("alg5_filter", round1_stats, algo="alg5", round=2 * l, l=l,

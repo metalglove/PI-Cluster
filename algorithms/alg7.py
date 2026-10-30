@@ -18,7 +18,7 @@ from viz_client import (UIClient, with_partition_stats, split_partition_stats,
 # ALGORITHM 7 (2-Round MapReduce, Sparse Inputs)
 # =============================================================================
 
-def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False, top_factor: int = 2, ui: Optional[UIClient] = None):
+def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, num_machines: int = 8, top_factor: int = 2, ui: Optional[UIClient] = None):
     """
     Algorithm 7: A 1/2 - epsilon approximation for sparse inputs in 2 rounds of MapReduce.
      - Round 1: each machine sends its O(k) largest elements to the central machine
@@ -29,7 +29,7 @@ def algorithm_7_sparse(sc: SparkContext, circles: list[Circle], points: list[Poi
     # we shuffle a copy of the circles before parallelizing, as sc.parallelize slices the list in order.
     shuffled = list(circles)
     random.Random(seed).shuffle(shuffled)
-    circles_rdd = sc.parallelize(shuffled, 16 if cluster_mode else 8) # m
+    circles_rdd = sc.parallelize(shuffled, num_machines) # m
 
     # NOTE: assumption that all points are broadcasted (or accessible via oracle) to all machines as per paper.
     points_bc = sc.broadcast(np.asarray(points, dtype=float))

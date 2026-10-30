@@ -15,7 +15,7 @@ from viz_client import UIClient
 # THEOREM 8 (Algorithms 6 and 7 in parallel)
 # =============================================================================
 
-def theorem_8_combined(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, cluster_mode: bool = False, ui: Optional[UIClient] = None):
+def theorem_8_combined(sc: SparkContext, circles: list[Circle], points: list[Point], k: int, epsilon: float, seed: int = 42, num_machines: int = 8, ui: Optional[UIClient] = None):
     """
     Theorem 8: By running Algorithms 6 and 7 in parallel, we have a 2-round 1/2 - epsilon approximation.
     We do not know whether the input is dense or sparse, so we run both and return the better of the two solutions.
@@ -23,11 +23,11 @@ def theorem_8_combined(sc: SparkContext, circles: list[Circle], points: list[Poi
     """
     started = time.time()
     print("Running Algorithm 6 (dense)...")
-    sol_6, cov_6 = algorithm_6_dense(sc, circles, points, k, epsilon, seed, cluster_mode, ui=ui)
+    sol_6, cov_6 = algorithm_6_dense(sc, circles, points, k, epsilon, seed, num_machines, ui=ui)
     print(f"Algorithm 6 coverage: {cov_6}")
 
     print("Running Algorithm 7 (sparse)...")
-    sol_7, cov_7 = algorithm_7_sparse(sc, circles, points, k, epsilon, seed, cluster_mode, ui=ui)
+    sol_7, cov_7 = algorithm_7_sparse(sc, circles, points, k, epsilon, seed, num_machines, ui=ui)
     print(f"Algorithm 7 coverage: {cov_7}")
 
     # return the better of the two solutions.

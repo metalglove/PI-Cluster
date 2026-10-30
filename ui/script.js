@@ -54,8 +54,10 @@ const ALGORITHMS = {
             { id: 5, text: 'S ← ∅', indent: 1 },
             { id: 6, text: 'while |S| &lt; k:', indent: 1 },
             { id: 7, text: 'find any c with Δf(c | S) ≥ τ', indent: 2, note: '1 Spark job' },
-            { id: 8, text: 'if found: S ← S ∪ {c}', indent: 2 },
-            { id: 9, text: 'else: stop this guess', indent: 2 },
+            { id: 8, text: 'if found:', indent: 2 },
+            { id: '8b', text: 'S ← S ∪ {c}', indent: 3 },
+            { id: 9, text: 'else:', indent: 2 },
+            { id: '9b', text: 'stop this guess', indent: 3 },
             { id: 10, text: 'keep S if f(S) is the best so far', indent: 1 },
             { id: 11, text: 'return best S' }
         ]
@@ -68,17 +70,20 @@ const ALGORITHMS = {
             'and one central machine finishes in round 2, however large the input. Guarantee: ½ − ε of OPT.',
         code: [
             { id: 'h6', head: 'Algorithm 6, dense inputs' },
-            { id: 'a1', text: 'S ← sample of V, each circle w.p. 4√(k/n); copy S to every machine' },
+            { id: 'a1', text: 'S ← sample of V, each circle w.p. 4√(k/n)' },
+            { id: 'a1b', text: 'copy S to every machine' },
             { id: 'a2', text: 'v ← max<sub>e∈S</sub> f(e)' },
             { id: 'a3', text: 'round 1, on every machine i, for every guess j:', note: '1 Spark job' },
             { id: 'a4', text: 'τ<sub>j</sub> ← v(1+ε)<sup>j</sup> / k', indent: 1 },
             { id: 'a5', text: 'G₀ ← ThresholdGreedy(S, ∅, τ<sub>j</sub>)', indent: 1 },
-            { id: 'a6', text: 'if |G₀| &lt; k: send R<sub>i</sub> ← ThresholdFilter(V<sub>i</sub>, G₀, τ<sub>j</sub>)', indent: 1 },
+            { id: 'a6', text: 'if |G₀| &lt; k:', indent: 1 },
+            { id: 'a6b', text: 'send R<sub>i</sub> ← ThresholdFilter(V<sub>i</sub>, G₀, τ<sub>j</sub>)', indent: 2 },
             { id: 'a7', text: 'round 2, on the central machine, for every j:' },
             { id: 'a8', text: 'G ← ThresholdGreedy(∪<sub>i</sub> R<sub>i</sub>, G₀, τ<sub>j</sub>)', indent: 1 },
             { id: 'h7', head: 'Algorithm 7, sparse inputs' },
             { id: 'b1', text: 'round 1: every machine sends its 2k circles with the largest f(e)', note: '1 Spark job' },
-            { id: 'b2', text: 'round 2, central: G<sub>j</sub> ← ThresholdGreedy(S, ∅, τ<sub>j</sub>) for every j' },
+            { id: 'b2', text: 'round 2, on the central machine, for every j:' },
+            { id: 'b2b', text: 'G<sub>j</sub> ← ThresholdGreedy(S, ∅, τ<sub>j</sub>)', indent: 1 },
             { id: 'h8', head: 'Theorem 8' },
             { id: 'c1', text: 'return the better of the two answers (2 rounds in total)' }
         ]
@@ -91,18 +96,24 @@ const ALGORITHMS = {
             'More rounds buy a better guarantee: 1 − (1 − 1/(t+1))<sup>t</sup> of OPT, which is ½ for t = 1, ' +
             '5/9 for t = 2, and tends to 1 − 1/e.',
         code: [
-            { id: 'd1', text: 'round 1: v ← max<sub>e∈V</sub> f(e); estimates OPT<sub>g</sub> ← v(1+ε)<sup>g</sup>', note: '1 Spark job' },
+            { id: 'd1', text: 'round 1: v ← max<sub>e∈V</sub> f(e)', note: '1 Spark job' },
+            { id: 'd1b', text: 'estimates OPT<sub>g</sub> ← v(1+ε)<sup>g</sup>' },
             { id: 'd2', text: 'for l = 1 … t:' },
-            { id: 'd3', text: 'round 2l: new sample S; on every machine i, for every g:', indent: 1, note: '1 Spark job' },
+            { id: 'd3', text: 'round 2l: S ← new random sample of V', indent: 1, note: '1 Spark job' },
+            { id: 'd3b', text: 'on every machine i, for every g:', indent: 1 },
             { id: 'd4', text: 'α<sub>l</sub> ← (1 − 1/(t+1))<sup>l</sup> · OPT<sub>g</sub> / k', indent: 2 },
-            { id: 'd5', text: 'G₀ ← ThresholdGreedy(S, G<sub>g</sub>, α<sub>l</sub>); send R<sub>i</sub> ← ThresholdFilter(V<sub>i</sub>, G₀, α<sub>l</sub>)', indent: 2 },
-            { id: 'd6', text: 'round 2l + 1, central: G<sub>g</sub> ← ThresholdGreedy(∪<sub>i</sub> R<sub>i</sub>, G₀, α<sub>l</sub>)', indent: 1 },
+            { id: 'd5', text: 'G₀ ← ThresholdGreedy(S, G<sub>g</sub>, α<sub>l</sub>)', indent: 2 },
+            { id: 'd5b', text: 'send R<sub>i</sub> ← ThresholdFilter(V<sub>i</sub>, G₀, α<sub>l</sub>)', indent: 2 },
+            { id: 'd6', text: 'round 2l + 1, on the central machine, for every g:', indent: 1 },
+            { id: 'd6b', text: 'G<sub>g</sub> ← ThresholdGreedy(∪<sub>i</sub> R<sub>i</sub>, G₀, α<sub>l</sub>)', indent: 2 },
             { id: 'd7', text: 'round 2t + 2: return the best G<sub>g</sub>' }
         ]
     }
 };
+// Plain-text subscript digits, for text set with textContent (α_1 -> α₁)
+const subscript = n => String(n).replace(/\d/g, d => '₀₁₂₃₄₅₆₇₈₉'[d]);
 const ALGO_LABEL = { alg6: 'Algorithm 6', alg7: 'Algorithm 7', alg5: 'Algorithm 5' };
-const FIRST_LINE = { greedy: [1], theorem8: ['a1'], alg5: ['d1'] };
+const FIRST_LINE = { greedy: [1], theorem8: ['a1', 'a1b'], alg5: ['d1', 'd1b'] };
 const LAST_LINE = { greedy: [11], theorem8: ['c1'], alg5: ['d7'] };
 // The MapReduce algorithms build one solution G per guess; greedy grows a single S.
 const isMapReduce = a => a !== 'greedy';
@@ -173,7 +184,7 @@ function reduce(s, e, index) {
                     `circles is copied to every machine.`;
                 break;
             }
-            s.lines = ['a1', 'a2'];
+            s.lines = ['a1', 'a1b', 'a2'];
             s.now = `Algorithm 6: S is a random sample of ${fmt(e.circles.length)} of the ${fmt(e.n)} circles, ` +
                 `and every machine gets a copy. The best single circle in S covers v = ${fmt(e.v)} points.`;
             break;
@@ -218,7 +229,7 @@ function reduce(s, e, index) {
                 s.now = `Round ${s.rounds}: ${spread}. ${fmt(passed)} clear τ = ${fmtTau(e.threshold)}; ` +
                     `the first one found is taken.`;
             } else {
-                s.lines = [9];
+                s.lines = [9, '9b'];
                 s.now = `Round ${s.rounds}: ${spread}. None clear τ = ${fmtTau(e.threshold)}, ` +
                     `so guess j = ${s.j} stops at |S| = ${s.circles.length}.`;
             }
@@ -248,7 +259,7 @@ function reduce(s, e, index) {
                              coverage: e.coverage, gains: s.gains });
             if (e.algo === 'alg5') {
                 const fromSample = e.g0 - e.kept, fromPis = e.circles.length - e.g0;
-                s.lines = ['d6'];
+                s.lines = ['d6', 'd6b'];
                 s.now = `Round ${2 * e.l + 1}, estimate g = ${e.j} (α = ${fmtTau(e.threshold)}): ` +
                     `${e.kept} circle${e.kept === 1 ? '' : 's'} kept from earlier thresholds, ` +
                     `${fromSample} added from the sample and ${fromPis} from what the Pis sent. ` +
@@ -265,7 +276,7 @@ function reduce(s, e, index) {
                       `Continuing with the ${fmt(e.candidates)} circles sent for this guess gives ` +
                       `|G| = ${e.circles.length}, f(G) = ${fmt(e.coverage)}.`;
             } else {
-                s.lines = ['b2'];
+                s.lines = ['b2', 'b2b'];
                 s.now = `${head}: ThresholdGreedy over the ${fmt(e.candidates)} circles sent in round 1 ` +
                     `picks ${e.circles.length}. f(G) = ${fmt(e.coverage)}.`;
             }
@@ -282,7 +293,7 @@ function reduce(s, e, index) {
             s.coverage = e.coverage;
             const g = s.guesses[s.guesses.length - 1];
             if (g) { g.picks = s.circles.length; g.coverage = e.coverage; }
-            s.lines = [8];
+            s.lines = [8, '8b'];
             s.now = `Pick ${e.step}: gain Δf = ${fmt(e.gain)} ≥ τ, so the circle joins S. f(S) = ${fmt(e.coverage)}.`;
             break;
         }
@@ -361,7 +372,7 @@ function roundCost(e) {
 // What the page says for each of Theorem 8's rounds: {lines, now} merged into the state.
 const TWO_ROUND_TEXT = {
     alg5_r0: e => ({
-        lines: ['d1'],
+        lines: ['d1', 'd1b'],
         now: `Round 1: every Pi finds its best single circle; the best of those covers v = ${fmt(e.v)}. ` +
             `OPT lies between v and k·v, so the algorithm keeps one solution per estimate v(1+ε)^g.`
     }),
@@ -369,14 +380,14 @@ const TWO_ROUND_TEXT = {
         const held = e.partitions.reduce((a, p) => a + p.held, 0);
         const sent = e.sent_circles ? e.sent_circles.length : 0;
         return {
-            lines: ['d3', 'd4', 'd5'],
+            lines: ['d3', 'd3b', 'd4', 'd5', 'd5b'],
             now: `Round ${e.round}: each Pi takes its share of the ${fmt(held)} circles and, for all ` +
-                `${e.estimates} estimates, keeps those that still clear α_${e.l} after G₀. ` +
+                `${e.estimates} estimates, keeps those that still clear α${subscript(e.l)} after G₀. ` +
                 `${fmt(sent)} distinct circles go to the central machine.`
         };
     },
     alg5_central: e => ({
-        lines: ['d6'],
+        lines: ['d6', 'd6b'],
         now: `Round ${e.round}: only the central machine (${e.partitions[0].host}) works, extending every ` +
             `estimate's solution with the ${fmt(e.partitions[0].held)} circles it received:`
     }),
@@ -388,9 +399,9 @@ const TWO_ROUND_TEXT = {
         const held = e.partitions.reduce((a, p) => a + p.held, 0);
         const sent = e.sent_circles ? e.sent_circles.length : 0;
         return {
-            lines: ['a3', 'a4', 'a5', 'a6'],
+            lines: ['a3', 'a4', 'a5', 'a6', 'a6b'],
             now: `Algorithm 6, round 1: each Pi takes its share of the ${fmt(held)} circles and, for all ` +
-                `${e.guesses} guesses, keeps those that still clear τ_j after G₀. ` +
+                `${e.guesses} guesses, keeps those that still clear τⱼ after G₀. ` +
                 `${fmt(sent)} distinct circles go to the central machine.`
         };
     },
@@ -410,7 +421,7 @@ const TWO_ROUND_TEXT = {
         };
     },
     alg7_r2: e => ({
-        lines: ['b2'],
+        lines: ['b2', 'b2b'],
         now: `Algorithm 7, round 2: the central machine (${e.partitions[0].host}) runs ThresholdGreedy ` +
             `over the ${fmt(e.partitions[0].held)} circles it received, once per guess:`
     })
@@ -532,6 +543,10 @@ function renderCode(algorithm) {
     if (state.config) {
         document.querySelector(`input[name="algorithm"][value="${algorithm}"]`).checked = true;
         if (state.t) $('tSelect').value = String(state.t);
+        // and the size picker on the input being shown (dataset is "size/seed/std")
+        const size = (state.config.dataset || '').split('/')[0];
+        const sizeInput = document.querySelector(`input[name="jobSize"][value="${size}"]`);
+        if (sizeInput) sizeInput.checked = true;
         renderTPicker();
     }
     const t = state.config ? state.t : selectedT();
@@ -565,7 +580,7 @@ function renderPanels() {
 
     const firstJ = s.algorithm === 'theorem8' ? 1 : 0;   // algorithms/alg6.py and alg7.py number Theorem 8's guesses from 1
     $('sGuess').textContent = s.j === null ? '–' : s.j;
-    $('sGuessTotal').textContent = s.totalGuesses ? ` of ${firstJ}…${firstJ + s.totalGuesses - 1}` : '';
+    $('sGuessTotal').textContent = s.totalGuesses ? ` of ${firstJ}…${firstJ + s.totalGuesses - 1} (${s.totalGuesses})` : '';
     $('sTau').textContent = fmtTau(s.tau);
     $('sSize').textContent = s.config && (!isMapReduce(s.algorithm) || s.j !== null) ? s.circles.length : '–';
     $('sK').textContent = s.config ? ` / ${s.config.k}` : '';
@@ -960,7 +975,7 @@ function drawGainChart() {
         ctx.stroke();
         ctx.setLineDash([]);
         // Label on a paper-coloured tab so bars behind it don't make it unreadable.
-        const label = `τ = ${fmtTau(tau)}`;
+        const label = `${state.algorithm === 'alg5' ? 'α' : 'τ'} = ${fmtTau(tau)}`;
         const lw = ctx.measureText(label).width + 8;
         ctx.fillStyle = C.surface;
         ctx.fillRect(w - pad.r - lw, Y(tau) - 17, lw, 14);
@@ -1168,6 +1183,16 @@ function drawMiniFigure(canvas, run) {
     }
 }
 
+// "on 2 Pis (8 cores) · m = 23 machines", from a run's INIT config
+function hardwareText(config) {
+    const parts = [];
+    if (config.pis) parts.push(`on ${config.pis} ${unitName('pis', config.pis)}` +
+        (config.cores_per_pi ? ` (${config.pis * config.cores_per_pi} cores)` : ''));
+    else if (config.cores) parts.push(`on ${config.cores} ${unitName('cores', config.cores)}`);
+    if (config.machines) parts.push(`m = ${config.machines} machines`);
+    return parts.join(' · ') || '&nbsp;';
+}
+
 async function showCompare(on) {
     $('compareView').hidden = !on;
     if (!on) return;
@@ -1187,6 +1212,7 @@ async function showCompare(on) {
         const time = r.final.elapsed_s != null ? `${fmt(Math.round(r.final.elapsed_s))} s` : '–';
         return `<div class="cv-col">
             <h3>${ALGORITHMS[a].title}</h3>
+            <p class="cv-hw">${hardwareText(r.init.config)}</p>
             <canvas class="cv-fig" id="cvFig-${a}"></canvas>
             <dl>
                 <div><dt>Points covered</dt><dd>${fmt(r.final.coverage)} <small>(${pct}%)</small></dd></div>
@@ -1222,7 +1248,273 @@ async function showCompare(on) {
         drawMiniFigure($(`cvFig-${a}`), r);
         drawStrip($(`cvStrip-${a}`), r.events, r.events.length, { slots });
     }
+    await refreshAnalysis();
 }
+
+// --- Speedup: the same run on more Pis (or cores) ---
+// m, the number of machines (partitions), depends only on the input, so every hardware size gives the
+// same answer and only the wall time changes. A full analysis runs every algorithm on 1, 2, ... N.
+let analysis = { running: false, plan: [], done: 0, results: [] };
+let hw = { unit: 'pis', max: 0 };   // what the next run can use, from /cluster-status
+let hwTouched = false;               // keep the user's pick across polls
+
+const unitName = (unit, n) => unit === 'pis' ? (n === 1 ? 'Pi' : 'Pis') : (n === 1 ? 'core' : 'cores');
+
+async function refreshAnalysis() {
+    const wasRunning = analysis.running;
+    try { analysis = await (await fetch('/analysis')).json(); } catch (e) { return; }
+    renderAnalysisButton();
+    if (wasRunning && !analysis.running) showCompare(true);   // finished: show the result
+    else if (!$('compareView').hidden) renderScaling();
+}
+
+function renderAnalysisButton() {
+    const btn = $('analysisBtn');
+    btn.textContent = analysis.running ? `Stop analysis (${analysis.done + 1} of ${analysis.plan.length})` : 'Full analysis';
+    btn.classList.toggle('btn-primary', analysis.running);
+    btn.disabled = !wsOpen || (!analysis.running && runInProgress());
+    // While the analysis runs it picks the algorithm, size and hardware itself: only Stop stays usable
+    document.querySelectorAll('input[name="algorithm"], input[name="jobSize"], #tSelect, #hwSelect')
+        .forEach(el => { el.disabled = analysis.running; });
+    document.querySelectorAll('.run-block .segmented, #tPicker, #hwPicker')
+        .forEach(el => el.classList.toggle('locked', analysis.running));
+    renderAnalysisQueue();
+}
+
+// The analysis plan as a row of chips: done (with its wall time), running (with its time so far), up next.
+function renderAnalysisQueue() {
+    const q = $('analysisQueue');
+    q.hidden = !analysis.running;
+    if (!analysis.running) return;
+    const unit = analysis.unit || 'pis';
+    const timeOf = (a, n) => (analysis.results || []).find(r => r.algorithm === a && r.parallel === n && r.unit === unit &&
+        (r.dataset || '').startsWith(analysis.size + '/') && (a !== 'alg5' || r.t === analysis.t));
+    const items = analysis.plan.map(([a, n], i) => {
+        const label = `${ALGORITHMS[a].name} · ${n} ${unitName(unit, n)}`;
+        if (i < analysis.done) {
+            const r = timeOf(a, n);
+            return `<span class="aq-item done">${label}${r ? ` · ${fmtS(r.elapsed_s)}` : ''}</span>`;
+        }
+        if (i === analysis.done) {
+            const since = analysis.current && analysis.now ? analysis.now - analysis.current.started_at : null;
+            return `<span class="aq-item running">${label}${since != null ? ` · ${fmtS(since)}` : ''}</span>`;
+        }
+        return `<span class="aq-item">${label}</span>`;
+    });
+    q.innerHTML = `<span class="aq-title">Full analysis, ${analysis.size}:</span>${items.join('')}`;
+}
+
+$('analysisBtn').addEventListener('click', async () => {
+    try {
+        if (analysis.running) {
+            await fetch('/analysis/stop', { method: 'POST' });
+        } else {
+            const size = document.querySelector('input[name="jobSize"]:checked').value;
+            await fetch('/analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ size, t: selectedT() })
+            });
+        }
+    } catch (e) {
+        console.error('Analysis request failed', e);
+    }
+    refreshAnalysis();
+});
+
+function renderHwPicker() {
+    $('hwPicker').hidden = !hw.max;
+    $('hwLabel').textContent = hw.unit === 'pis' ? 'Pis' : 'Cores';
+    const sel = $('hwSelect');
+    const current = hwTouched ? Number(sel.value) : hw.max;
+    if (sel.options.length !== hw.max) {
+        sel.innerHTML = Array.from({ length: hw.max }, (_, i) => `<option>${i + 1}</option>`).join('');
+    }
+    sel.value = String(Math.min(current || hw.max, hw.max));
+}
+$('hwSelect').addEventListener('change', () => { hwTouched = true; });
+
+// The finished runs to compare: the dataset size picked in the header, and the t picked for Algorithm 5.
+let sizeTouched = false;   // after the user picks a size, show that one instead of the last analysis'
+document.querySelectorAll('input[name="jobSize"]').forEach(r => r.addEventListener('change', () => {
+    sizeTouched = true;
+    if (!$('compareView').hidden) renderScaling();
+}));
+
+function scalingRows() {
+    const size = analysis.size && (analysis.running || !sizeTouched) ? analysis.size
+        : document.querySelector('input[name="jobSize"]:checked').value;
+    const t = analysis.running ? analysis.t : selectedT();
+    const runs = (analysis.results || []).filter(r =>
+        (r.dataset || '').startsWith(size + '/') && (r.algorithm !== 'alg5' || r.t === t));
+    const unit = runs.some(r => r.unit === 'pis') ? 'pis' : 'cores';
+    const mine = runs.filter(r => r.unit === unit);
+    const sizes = [...new Set(mine.map(r => r.parallel))].sort((a, b) => a - b);
+    const rows = Object.keys(ALGORITHMS).map(a => {
+        const byN = new Map(mine.filter(r => r.algorithm === a).map(r => [r.parallel, r]));
+        const base = sizes.map(n => byN.get(n)).find(Boolean);
+        return { algorithm: a, byN, base, rounds: base ? base.rounds : null };
+    }).filter(r => r.byN.size);
+    return { size, t, unit, sizes, rows };
+}
+
+function renderScaling() {
+    const { size, t, unit, sizes, rows } = scalingRows();
+    const U = unit === 'pis' ? 'Pis' : 'cores';
+    $('cvScalingTitle').textContent = `Speedup with more ${U}`;
+    const progress = analysis.running
+        ? `Full analysis running: run ${analysis.done + 1} of ${analysis.plan.length}` +
+          (analysis.current ? ` (${ALGORITHMS[analysis.current.algorithm].name} on ${analysis.current.parallel} ` +
+              `${unitName(analysis.unit, analysis.current.parallel)})` : '') + '.'
+        : '';
+    $('cvScalingProgress').textContent = progress;
+    $('cvScalingProgress').hidden = !progress;
+
+    if (!rows.length) {
+        $('cvScalingLede').textContent = `No timed runs on the ${size} dataset yet. Press Full analysis to run every ` +
+            `algorithm on 1, 2, … all ${U}, or pick a number in the header and run one.`;
+        ['scalingHeadline', 'scalingBars', 'scalingTable', 'scalingWhy'].forEach(id => { $(id).innerHTML = ''; });
+        $('scalingChart').hidden = true;
+        return;
+    }
+    const lo = sizes[0], hi = sizes[sizes.length - 1];
+    const hw = n => `${n} ${unitName(unit, n)}`;
+    const nameOf = r => ALGORITHMS[r.algorithm].name + (r.algorithm === 'alg5' ? `, t = ${t}` : '');
+    const covOf = r => [...r.byN.values()][0].coverage;
+    // Wall time split into work on the machines and coordination (everything else), as viz_server estimates it
+    const split = run => {
+        const work = Math.min(run.work_s ?? run.elapsed_s, run.elapsed_s);
+        return { work, coord: run.elapsed_s - work, share: (run.elapsed_s - work) / run.elapsed_s };
+    };
+    $('cvScalingLede').textContent = `The same input (${size}) on ${sizes.map(hw).join(', ')}. ` +
+        `Wall time is the algorithm itself, from its first Spark job to its answer, without starting Spark.`;
+
+    // Headline: what more hardware bought each algorithm, and the MapReduce algorithms against greedy
+    const greedy = rows.find(r => r.algorithm === 'greedy');
+    const lines = rows.filter(r => r.byN.has(hi) && r.byN.get(hi) !== r.base).map(r => {
+        const top = r.byN.get(hi);
+        const x = r.base.elapsed_s / top.elapsed_s;
+        return `<li><b>${nameOf(r)}</b>: ${x < 1.05 ? 'no faster' : `${x.toFixed(2)}× faster`} on ${hw(hi)} ` +
+            `than on ${hw(r.base.parallel)} (${fmtS(r.base.elapsed_s)} → ${fmtS(top.elapsed_s)}).</li>`;
+    });
+    if (greedy && greedy.byN.has(hi)) {
+        rows.filter(r => r !== greedy && r.byN.has(hi)).forEach(r => {
+            const times = greedy.byN.get(hi).elapsed_s / r.byN.get(hi).elapsed_s;
+            const more = 100 * (covOf(r) - covOf(greedy)) / covOf(greedy);
+            lines.push(`<li><b>${nameOf(r)}</b> vs threshold greedy on ${hw(hi)}: ${times.toFixed(1)}× faster, ` +
+                `${more >= 0 ? `${more.toFixed(1)}% more` : `${(-more).toFixed(1)}% fewer`} points covered, ` +
+                `${fmt(r.rounds)} rounds instead of ${fmt(greedy.rounds)}.</li>`);
+        });
+    }
+    $('scalingHeadline').innerHTML = lines.length ? `<ul>${lines.join('')}</ul>` : '';
+
+    // Wall-time bars: one bar per algorithm and hardware size, all on the same scale of seconds
+    const maxS = Math.max(...rows.flatMap(r => [...r.byN.values()].map(x => x.elapsed_s)));
+    $('scalingBars').innerHTML = `<div class="sb-legend"><span><i class="k-work"></i>work on the machines</span>` +
+        `<span><i class="k-coord"></i>coordination: scheduling, sending data, the driver's rounds</span></div>` +
+        rows.map((r, i) => `
+        <div class="sb-group">
+            <div class="sb-name"><i class="swatch" style="--c:${C.machines[i % C.machines.length]}"></i>${nameOf(r)}</div>
+            ${sizes.filter(n => r.byN.has(n)).map(n => {
+                const run = r.byN.get(n);
+                const speedup = r.base.elapsed_s / run.elapsed_s;
+                const { work, coord, share } = split(run);
+                return `<div class="sb-row" title="${nameOf(r)} on ${hw(n)}: ${run.elapsed_s.toFixed(1)} s in ${fmt(r.rounds)} rounds, ` +
+                    `${speedup.toFixed(2)}× the speed on ${hw(r.base.parallel)}. About ${fmtS(work)} of work on the machines and ` +
+                    `${fmtS(coord)} of coordination (${Math.round(100 * share)}%), ${(coord / Math.max(1, r.rounds)).toFixed(1)} s per round.">
+                    <span class="sb-hw">${hw(n)}</span>
+                    <span class="sb-track"><span class="sb-bar" style="width:${Math.max(0.5, 100 * run.elapsed_s / maxS)}%;--c:${C.machines[i % C.machines.length]}">
+                        <span class="sb-work" style="flex:${work}"></span><span class="sb-coord" style="flex:${coord}"></span></span></span>
+                    <span class="sb-val">${fmtS(run.elapsed_s)}${run === r.base ? '' : ` <small>${speedup.toFixed(2)}×</small>`}` +
+                    ` <small>· ${Math.round(100 * share)}% coord.</small></span>
+                </div>`;
+            }).join('')}
+        </div>`).join('');
+
+    // Table: time, speedup and efficiency per hardware size
+    const head = `<thead><tr><th>Algorithm</th>${sizes.map(n => `<th>${hw(n)}</th>`).join('')}` +
+        `<th>Rounds</th><th>Points covered</th></tr></thead>`;
+    const body = rows.map(r => {
+        const cells = sizes.map(n => {
+            const run = r.byN.get(n);
+            if (!run) return `<td>–</td>`;
+            const speedup = r.base.elapsed_s / run.elapsed_s;
+            const efficiency = speedup / (n / r.base.parallel);
+            return `<td>${run.elapsed_s.toFixed(1)} s<br><small>${speedup.toFixed(2)}× · ${Math.round(100 * efficiency)}% eff.</small></td>`;
+        }).join('');
+        const covs = [...new Set([...r.byN.values()].map(x => x.coverage))];
+        const cov = covs.length === 1 ? fmt(covs[0]) : `<span class="warn">differs: ${covs.map(fmt).join(' / ')}</span>`;
+        return `<tr><td>${nameOf(r)}</td>${cells}<td>${fmt(r.rounds)}</td><td>${cov}</td></tr>`;
+    }).join('');
+    $('scalingTable').innerHTML = head + `<tbody>${body}</tbody>`;
+
+    // Why not linear: the m machines run in waves over the cores, and coordination does not spread out
+    const any = rows[0].base;
+    const coresOf = n => unit === 'pis' ? n * (any.cores_per_pi || 4) : n;
+    const waves = n => Math.ceil(any.machines / coresOf(n));
+    const g = greedy && greedy.byN.has(hi) ? split(greedy.byN.get(hi)) : null;
+    $('scalingWhy').innerHTML = any.machines ? `<b>Why not ${hi / lo}×?</b> The input is split into m = ${any.machines} ` +
+        `machines (partitions), the same on any hardware. ${sizes.map(n => (unit === 'pis' ? `${hw(n)} = ${coresOf(n)} cores ` : `${hw(n)} `) +
+        `run${unit !== 'pis' && n === 1 ? 's' : ''} them in ${waves(n)} wave${waves(n) === 1 ? '' : 's'}`).join(', ')}, so the work on the machines can get at most ` +
+        `${(waves(lo) / waves(hi)).toFixed(1)}× faster. Coordination (scheduling each Spark job, sending the points and ` +
+        `the current solution to every machine, the central rounds on the driver) does not shrink with more ${U}. ` +
+        (g ? `Threshold greedy pays it in each of its ${fmt(greedy.rounds)} rounds: about ` +
+            `${(g.coord / greedy.rounds).toFixed(1)} s per round on ${hw(hi)}, ${Math.round(100 * g.share)}% of its wall time. ` +
+            `The more rounds an algorithm needs, the more coordination dominates.` : '') : '';
+
+    $('scalingChart').hidden = sizes.length < 3;
+    if (sizes.length >= 3) drawScalingChart($('scalingChart'), unit, sizes, rows);
+}
+
+const fmtS = s => s >= 120 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${s.toFixed(1)} s`;
+
+// Speedup against hardware size, one line per algorithm, with the ideal (linear) speedup dashed.
+function drawScalingChart(canvas, unit, sizes, rows) {
+    const { ctx, w, h } = setupCanvas(canvas);
+    ctx.clearRect(0, 0, w, h);
+    const pad = { l: 40, r: 12, t: 12, b: 36 };
+    const iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+    const lo = sizes[0], hi = sizes[sizes.length - 1];
+    const speedups = rows.flatMap(r => [...r.byN.values()].map(x => r.base.elapsed_s / x.elapsed_s));
+    const top = Math.max(hi / lo, ...speedups) * 1.05;
+    const X = n => pad.l + ((n - lo) / (hi - lo)) * iw;
+    const Y = v => pad.t + ih - (v / top) * ih;
+
+    ctx.font = '11px ' + getComputedStyle(document.body).fontFamily;
+    ctx.lineWidth = 1;
+    for (let v = 0; v <= top; v += top > 6 ? 2 : 1) {
+        ctx.strokeStyle = v === 0 ? C.ruleStrong : C.rule;
+        ctx.beginPath(); ctx.moveTo(pad.l, Y(v)); ctx.lineTo(pad.l + iw, Y(v)); ctx.stroke();
+        ctx.fillStyle = C.muted; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+        ctx.fillText(`${v}×`, pad.l - 6, Y(v));
+    }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    sizes.forEach(n => ctx.fillText(String(n), X(n), pad.t + ih + 6));
+    ctx.fillText(unit === 'pis' ? 'Pis' : 'cores', pad.l + iw / 2, pad.t + ih + 20);
+
+    // ideal: twice the hardware, twice as fast
+    ctx.strokeStyle = C.muted; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(X(lo), Y(1)); ctx.lineTo(X(hi), Y(hi / lo)); ctx.stroke();
+    ctx.setLineDash([]);
+
+    const labels = [];
+    rows.forEach((r, i) => {
+        const color = C.machines[i % C.machines.length];
+        const pts = sizes.filter(n => r.byN.has(n)).map(n => [X(n), Y(r.base.elapsed_s / r.byN.get(n).elapsed_s)]);
+        ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
+        ctx.beginPath(); pts.forEach(([x, y], j) => j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+        pts.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); });
+        const [lx, ly] = pts[pts.length - 1];
+        labels.push({ text: ALGORITHMS[r.algorithm].name, color, x: lx - 6, y: ly - 6 });
+    });
+    // labels at the lines' ends, pushed apart so close lines stay readable
+    labels.sort((a, b) => a.y - b.y);
+    labels.forEach((l, i) => { if (i && l.y - labels[i - 1].y < 14) l.y = labels[i - 1].y + 14; });
+    ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+    ctx.lineWidth = 4; ctx.lineJoin = 'round'; ctx.strokeStyle = C.surface;   // a halo keeps them clear of the lines
+    labels.forEach(l => { ctx.strokeText(l.text, l.x, l.y); ctx.fillStyle = l.color; ctx.fillText(l.text, l.x, l.y); });
+}
+
 $('compareBtn').addEventListener('click', () => showCompare(true));
 $('cvClose').addEventListener('click', () => showCompare(false));
 $('compareView').addEventListener('click', e => { if (e.target === $('compareView')) showCompare(false); });
@@ -1251,7 +1543,7 @@ function runInProgress() {
 }
 
 function renderRunButton() {
-    const busy = submitting || runInProgress() || appState === 'WAITING';
+    const busy = submitting || runInProgress() || appState === 'WAITING' || analysis.running;
     const btn = $('runBtn');
     btn.disabled = busy || !wsOpen;
     btn.textContent = appState === 'WAITING' ? 'Waiting for cores…' : busy ? 'Running…' : 'Run on cluster';
@@ -1259,6 +1551,7 @@ function renderRunButton() {
     const dot = $('connDot');
     dot.className = 'dot ' + (!wsOpen ? 'bad' : busy ? 'busy' : 'ok');
     $('connText').textContent = !wsOpen ? 'Disconnected' : busy ? 'Job running' : 'Connected';
+    renderAnalysisButton();
 }
 
 $('runBtn').addEventListener('click', async () => {
@@ -1269,7 +1562,8 @@ $('runBtn').addEventListener('click', async () => {
         const res = await fetch('/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ size, algorithm: selectedAlgorithm(), t: selectedT() })
+            body: JSON.stringify({ size, algorithm: selectedAlgorithm(), t: selectedT(),
+                                   parallel: Number($('hwSelect').value) || null })
         });
         const data = await res.json();
         if (data.status !== 'started') console.error('Run failed', data);
@@ -1309,6 +1603,9 @@ async function pollCluster() {
         const res = await fetch('/cluster-status');
         const data = await res.json();
         clusterWorkers = data.status === 'error' ? [] : (data.workers || []);
+        hw = data.is_pi_cluster
+            ? { unit: 'pis', max: clusterWorkers.filter(w => w.state === 'ALIVE').length }
+            : { unit: 'cores', max: data.local_cores || 0 };
         // greedy runs as "CircleCover", theorem8 and alg5 as "CircleCoverMR"
         const mine = (data.activeapps || []).find(a => a.name.startsWith('CircleCover'));
         appState = mine ? mine.state : null;
@@ -1317,6 +1614,8 @@ async function pollCluster() {
         appState = null;
     }
     renderCluster();
+    renderHwPicker();
+    await refreshAnalysis();
     renderRunButton();
 }
 
