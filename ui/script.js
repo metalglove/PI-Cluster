@@ -54,8 +54,10 @@ const ALGORITHMS = {
             { id: 5, text: 'S ← ∅', indent: 1 },
             { id: 6, text: 'while |S| &lt; k:', indent: 1 },
             { id: 7, text: 'find any c with Δf(c | S) ≥ τ', indent: 2, note: '1 Spark job' },
-            { id: 8, text: 'if found: S ← S ∪ {c}', indent: 2 },
-            { id: 9, text: 'else: stop this guess', indent: 2 },
+            { id: 8, text: 'if found:', indent: 2 },
+            { id: '8b', text: 'S ← S ∪ {c}', indent: 3 },
+            { id: 9, text: 'else:', indent: 2 },
+            { id: '9b', text: 'stop this guess', indent: 3 },
             { id: 10, text: 'keep S if f(S) is the best so far', indent: 1 },
             { id: 11, text: 'return best S' }
         ]
@@ -68,17 +70,20 @@ const ALGORITHMS = {
             'and one central machine finishes in round 2, however large the input. Guarantee: ½ − ε of OPT.',
         code: [
             { id: 'h6', head: 'Algorithm 6, dense inputs' },
-            { id: 'a1', text: 'S ← sample of V, each circle w.p. 4√(k/n); copy S to every machine' },
+            { id: 'a1', text: 'S ← sample of V, each circle w.p. 4√(k/n)' },
+            { id: 'a1b', text: 'copy S to every machine' },
             { id: 'a2', text: 'v ← max<sub>e∈S</sub> f(e)' },
             { id: 'a3', text: 'round 1, on every machine i, for every guess j:', note: '1 Spark job' },
             { id: 'a4', text: 'τ<sub>j</sub> ← v(1+ε)<sup>j</sup> / k', indent: 1 },
             { id: 'a5', text: 'G₀ ← ThresholdGreedy(S, ∅, τ<sub>j</sub>)', indent: 1 },
-            { id: 'a6', text: 'if |G₀| &lt; k: send R<sub>i</sub> ← ThresholdFilter(V<sub>i</sub>, G₀, τ<sub>j</sub>)', indent: 1 },
+            { id: 'a6', text: 'if |G₀| &lt; k:', indent: 1 },
+            { id: 'a6b', text: 'send R<sub>i</sub> ← ThresholdFilter(V<sub>i</sub>, G₀, τ<sub>j</sub>)', indent: 2 },
             { id: 'a7', text: 'round 2, on the central machine, for every j:' },
             { id: 'a8', text: 'G ← ThresholdGreedy(∪<sub>i</sub> R<sub>i</sub>, G₀, τ<sub>j</sub>)', indent: 1 },
             { id: 'h7', head: 'Algorithm 7, sparse inputs' },
             { id: 'b1', text: 'round 1: every machine sends its 2k circles with the largest f(e)', note: '1 Spark job' },
-            { id: 'b2', text: 'round 2, central: G<sub>j</sub> ← ThresholdGreedy(S, ∅, τ<sub>j</sub>) for every j' },
+            { id: 'b2', text: 'round 2, on the central machine, for every j:' },
+            { id: 'b2b', text: 'G<sub>j</sub> ← ThresholdGreedy(S, ∅, τ<sub>j</sub>)', indent: 1 },
             { id: 'h8', head: 'Theorem 8' },
             { id: 'c1', text: 'return the better of the two answers (2 rounds in total)' }
         ]
@@ -99,7 +104,8 @@ const ALGORITHMS = {
             { id: 'd4', text: 'α<sub>l</sub> ← (1 − 1/(t+1))<sup>l</sup> · OPT<sub>g</sub> / k', indent: 2 },
             { id: 'd5', text: 'G₀ ← ThresholdGreedy(S, G<sub>g</sub>, α<sub>l</sub>)', indent: 2 },
             { id: 'd5b', text: 'send R<sub>i</sub> ← ThresholdFilter(V<sub>i</sub>, G₀, α<sub>l</sub>)', indent: 2 },
-            { id: 'd6', text: 'round 2l + 1, central: G<sub>g</sub> ← ThresholdGreedy(∪<sub>i</sub> R<sub>i</sub>, G₀, α<sub>l</sub>)', indent: 1 },
+            { id: 'd6', text: 'round 2l + 1, on the central machine, for every g:', indent: 1 },
+            { id: 'd6b', text: 'G<sub>g</sub> ← ThresholdGreedy(∪<sub>i</sub> R<sub>i</sub>, G₀, α<sub>l</sub>)', indent: 2 },
             { id: 'd7', text: 'round 2t + 2: return the best G<sub>g</sub>' }
         ]
     }
@@ -107,7 +113,7 @@ const ALGORITHMS = {
 // Plain-text subscript digits, for text set with textContent (α_1 -> α₁)
 const subscript = n => String(n).replace(/\d/g, d => '₀₁₂₃₄₅₆₇₈₉'[d]);
 const ALGO_LABEL = { alg6: 'Algorithm 6', alg7: 'Algorithm 7', alg5: 'Algorithm 5' };
-const FIRST_LINE = { greedy: [1], theorem8: ['a1'], alg5: ['d1', 'd1b'] };
+const FIRST_LINE = { greedy: [1], theorem8: ['a1', 'a1b'], alg5: ['d1', 'd1b'] };
 const LAST_LINE = { greedy: [11], theorem8: ['c1'], alg5: ['d7'] };
 // The MapReduce algorithms build one solution G per guess; greedy grows a single S.
 const isMapReduce = a => a !== 'greedy';
@@ -178,7 +184,7 @@ function reduce(s, e, index) {
                     `circles is copied to every machine.`;
                 break;
             }
-            s.lines = ['a1', 'a2'];
+            s.lines = ['a1', 'a1b', 'a2'];
             s.now = `Algorithm 6: S is a random sample of ${fmt(e.circles.length)} of the ${fmt(e.n)} circles, ` +
                 `and every machine gets a copy. The best single circle in S covers v = ${fmt(e.v)} points.`;
             break;
@@ -223,7 +229,7 @@ function reduce(s, e, index) {
                 s.now = `Round ${s.rounds}: ${spread}. ${fmt(passed)} clear τ = ${fmtTau(e.threshold)}; ` +
                     `the first one found is taken.`;
             } else {
-                s.lines = [9];
+                s.lines = [9, '9b'];
                 s.now = `Round ${s.rounds}: ${spread}. None clear τ = ${fmtTau(e.threshold)}, ` +
                     `so guess j = ${s.j} stops at |S| = ${s.circles.length}.`;
             }
@@ -253,7 +259,7 @@ function reduce(s, e, index) {
                              coverage: e.coverage, gains: s.gains });
             if (e.algo === 'alg5') {
                 const fromSample = e.g0 - e.kept, fromPis = e.circles.length - e.g0;
-                s.lines = ['d6'];
+                s.lines = ['d6', 'd6b'];
                 s.now = `Round ${2 * e.l + 1}, estimate g = ${e.j} (α = ${fmtTau(e.threshold)}): ` +
                     `${e.kept} circle${e.kept === 1 ? '' : 's'} kept from earlier thresholds, ` +
                     `${fromSample} added from the sample and ${fromPis} from what the Pis sent. ` +
@@ -270,7 +276,7 @@ function reduce(s, e, index) {
                       `Continuing with the ${fmt(e.candidates)} circles sent for this guess gives ` +
                       `|G| = ${e.circles.length}, f(G) = ${fmt(e.coverage)}.`;
             } else {
-                s.lines = ['b2'];
+                s.lines = ['b2', 'b2b'];
                 s.now = `${head}: ThresholdGreedy over the ${fmt(e.candidates)} circles sent in round 1 ` +
                     `picks ${e.circles.length}. f(G) = ${fmt(e.coverage)}.`;
             }
@@ -287,7 +293,7 @@ function reduce(s, e, index) {
             s.coverage = e.coverage;
             const g = s.guesses[s.guesses.length - 1];
             if (g) { g.picks = s.circles.length; g.coverage = e.coverage; }
-            s.lines = [8];
+            s.lines = [8, '8b'];
             s.now = `Pick ${e.step}: gain Δf = ${fmt(e.gain)} ≥ τ, so the circle joins S. f(S) = ${fmt(e.coverage)}.`;
             break;
         }
@@ -381,7 +387,7 @@ const TWO_ROUND_TEXT = {
         };
     },
     alg5_central: e => ({
-        lines: ['d6'],
+        lines: ['d6', 'd6b'],
         now: `Round ${e.round}: only the central machine (${e.partitions[0].host}) works, extending every ` +
             `estimate's solution with the ${fmt(e.partitions[0].held)} circles it received:`
     }),
@@ -393,7 +399,7 @@ const TWO_ROUND_TEXT = {
         const held = e.partitions.reduce((a, p) => a + p.held, 0);
         const sent = e.sent_circles ? e.sent_circles.length : 0;
         return {
-            lines: ['a3', 'a4', 'a5', 'a6'],
+            lines: ['a3', 'a4', 'a5', 'a6', 'a6b'],
             now: `Algorithm 6, round 1: each Pi takes its share of the ${fmt(held)} circles and, for all ` +
                 `${e.guesses} guesses, keeps those that still clear τⱼ after G₀. ` +
                 `${fmt(sent)} distinct circles go to the central machine.`
@@ -415,7 +421,7 @@ const TWO_ROUND_TEXT = {
         };
     },
     alg7_r2: e => ({
-        lines: ['b2'],
+        lines: ['b2', 'b2b'],
         now: `Algorithm 7, round 2: the central machine (${e.partitions[0].host}) runs ThresholdGreedy ` +
             `over the ${fmt(e.partitions[0].held)} circles it received, once per guess:`
     })
@@ -537,6 +543,10 @@ function renderCode(algorithm) {
     if (state.config) {
         document.querySelector(`input[name="algorithm"][value="${algorithm}"]`).checked = true;
         if (state.t) $('tSelect').value = String(state.t);
+        // and the size picker on the input being shown (dataset is "size/seed/std")
+        const size = (state.config.dataset || '').split('/')[0];
+        const sizeInput = document.querySelector(`input[name="jobSize"][value="${size}"]`);
+        if (sizeInput) sizeInput.checked = true;
         renderTPicker();
     }
     const t = state.config ? state.t : selectedT();

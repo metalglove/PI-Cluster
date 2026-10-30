@@ -48,7 +48,7 @@ All of them build on Algorithm 1 (ThresholdGreedy), Algorithm 2 (ThresholdFilter
 
 ## The dashboard
 
-![Theorem 8 on the medium dataset: the chosen circles, the marginal gain of each pick and the pseudocode](docs/dashboard.png)
+![Algorithm 5 on the medium dataset: the chosen circles, the marginal gain of each pick and the pseudocode](docs/dashboard.png)
 
 - **Step through a run.** Every Spark round is an event on a timeline. Play, pause, step, scrub, or jump to a guess or round. The pseudocode highlights the line being executed.
 - **See the work on the cluster.** Each round is drawn per Pi and per partition: how many circles each machine checked, what it sent to the driver, and which Pi found each chosen circle.
