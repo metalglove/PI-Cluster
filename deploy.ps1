@@ -5,10 +5,9 @@ Write-Host "Deploying to Pi Cluster..." -ForegroundColor Cyan
 Write-Host ""
 
 # Main algorithm
-Write-Host "[1/5] Deploying main.py, alg.py and viz_client.py..." -ForegroundColor Yellow
-scp main.py pi@raspberrypi:/home/pi/main.py
-scp alg.py pi@raspberrypi:/home/pi/alg.py
-scp viz_client.py pi@raspberrypi:/home/pi/viz_client.py
+Write-Host "[1/5] Deploying main.py, data.py, oracle.py, viz_client.py and algorithms/..." -ForegroundColor Yellow
+scp main.py data.py oracle.py viz_client.py pi@raspberrypi:/home/pi/
+scp -r algorithms pi@raspberrypi:/home/pi/
 
 # Visualization server
 Write-Host "[2/5] Deploying viz_server.py..." -ForegroundColor Yellow
@@ -25,7 +24,7 @@ Write-Host "[5/5] Deploying UI JavaScript..." -ForegroundColor Yellow
 scp ui/script.js pi@raspberrypi:/home/pi/ui/script.js
 
 Write-Host ""
-Write-Host "✓ Deployment complete!" -ForegroundColor Green
+Write-Host "[OK] Deployment complete!" -ForegroundColor Green
 Write-Host ""
 
 Write-Host "Stopping existing server..." -ForegroundColor Yellow
@@ -42,10 +41,10 @@ Start-Sleep -Seconds 5
 # Verification step
 $check = ssh pi@raspberrypi "netstat -tuln | grep :8000"
 if ($check -match "8000") {
-    Write-Host "✓ Server restarted and listening on port 8000!" -ForegroundColor Green
+    Write-Host "[OK] Server restarted and listening on port 8000!" -ForegroundColor Green
 }
 else {
-    Write-Host "⚠ WARNING: Server might not have started correctly. Check viz_server.log on Pi." -ForegroundColor Red
+    Write-Host "[!] WARNING: Server might not have started correctly. Check viz_server.log on Pi." -ForegroundColor Red
     ssh pi@raspberrypi "tail -n 10 /home/pi/viz_server.log"
 }
 

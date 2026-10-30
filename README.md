@@ -1,21 +1,23 @@
 # Circle Cover Problem - PySpark Implementation
 
-Distributed algorithms for the circle cover problem, implemented with Apache Spark and run on a Raspberry Pi cluster. The project contains two implementations:
+Distributed algorithms for the circle cover problem, implemented with Apache Spark and run on a Raspberry Pi cluster. `main.py` starts every run and picks the algorithm with `--algorithm`:
 
-- **`main.py`**: sequential greedy thresholding with a **1/2(1-ε) approximation guarantee**, with each greedy step parallelized over Spark. It is wired to the visualization dashboard.
-- **`alg.py`**: the MapReduce algorithms from Liu & Vondrák, [*Submodular Optimization in the MapReduce Model*](https://arxiv.org/abs/1810.01489) (SOSA 2019), which need only a constant number of rounds.
+- **`greedy`** (`algorithms/greedy.py`, default): sequential greedy thresholding with a **1/2(1-ε) approximation guarantee**, with each greedy step parallelized over Spark.
+- **`theorem8`** and **`alg5`** (`algorithms/`): the MapReduce algorithms from Liu & Vondrák, [*Submodular Optimization in the MapReduce Model*](https://arxiv.org/abs/1810.01489) (SOSA 2019), which need only a constant number of rounds.
+
+All of them are wired to the visualization dashboard.
 
 ## Algorithm
 
 The circle cover problem is a geometric variant of set cover: given a set of points P and candidate circles C, find k circles that cover the maximum number of points. The coverage function is monotone submodular, so submodular maximization algorithms apply.
 
-### Greedy thresholding (`main.py`)
+### Greedy thresholding (`algorithms/greedy.py`)
 
 - **Greedy thresholding** with logarithmic guesses for unknown OPT
 - **PySpark** for parallelizing marginal gain computation
 - Every greedy step is a separate Spark job, so a run takes roughly k · log(k) / ε rounds
 
-### MapReduce algorithms from the paper (`alg.py`)
+### MapReduce algorithms from the paper (`algorithms/`)
 
 | Algorithm | Paper | Rounds | Approximation |
 |-----------|-------|--------|---------------|
@@ -63,14 +65,14 @@ python main.py --size small
 # Run with visualization server (in separate terminals)
 python viz_server.py  # Terminal 1
 python main.py --ui-url http://localhost:8000 --size medium  # Terminal 2
-python alg.py --ui-url http://localhost:8000 --size medium   # or the 2-round algorithm
+python main.py --ui-url http://localhost:8000 --size medium --algorithm theorem8   # or the 2-round algorithm
 # (or pick the algorithm and size in the UI and press "Run on cluster")
 
 # Run the paper's 2-round algorithm (Theorem 8: Algorithms 6 + 7)
-python alg.py --size small
+python main.py --algorithm theorem8 --size small
 
 # Run the paper's Algorithm 5 with t thresholds (2t + 2 rounds)
-python alg.py --algorithm alg5 --t 3 --size small
+python main.py --algorithm alg5 --t 3 --size small
 ```
 
 ### Cluster Mode (Raspberry Pi)
@@ -83,8 +85,8 @@ ssh pi@raspberrypi
 ~/spark-env/bin/python ~/main.py --cluster --size medium
 
 # Run the paper's algorithms on the cluster
-~/spark-env/bin/python ~/alg.py --cluster --size medium
-~/spark-env/bin/python ~/alg.py --cluster --algorithm alg5 --t 2 --size medium
+~/spark-env/bin/python ~/main.py --cluster --algorithm theorem8 --size medium
+~/spark-env/bin/python ~/main.py --cluster --algorithm alg5 --t 2 --size medium
 ```
 
 ---
@@ -145,10 +147,10 @@ ssh pi@raspberrypi "tail -50 ~/spark/logs/spark-pi-org.apache.spark.deploy.maste
 ### Deploy Application
 
 ```bash
-# Copy scripts to Pi
-scp main.py pi@raspberrypi:~/main.py
-scp alg.py pi@raspberrypi:~/alg.py
-scp viz_client.py pi@raspberrypi:~/viz_client.py
+# Copy scripts to Pi (or run deploy.sh). Only the master needs them: main.py ships
+# the modules to the workers at start-up.
+scp main.py data.py oracle.py viz_client.py pi@raspberrypi:~/
+scp -r algorithms pi@raspberrypi:~/
 
 # Run on cluster (without visualization)
 ssh pi@raspberrypi "~/spark-env/bin/python ~/main.py --cluster --size medium"
@@ -184,7 +186,7 @@ Open `http://raspberrypi:8000` in your browser.
 - **Real-time Visualization**: See points and circles as they are covered during exploration.
 - **Final Solution Highlighting**: Best solution circles rendered in **gold** with enhanced glow, distinguishing them from intermediate guesses (cyan).
 - **Dataset Size Selection**: Choose from small (2K), medium (25K), or large (100K) point datasets.
-- **Smart Sampling**: Automatic stratified/uniform sampling for large datasets to maintain UI performance.
+- **Smart Sampling**: Larger datasets send a uniform sample of 5,000 points to keep the UI fast.
 - **Cluster Control**: Start new simulations directly from the UI with customizable dataset sizes.
 - **Live Worker Stats**: Monitor core/memory usage of connected nodes in real-time.
 - **Algorithm Metrics**: Track marginal gain and total coverage graphs across all guesses.
@@ -217,23 +219,29 @@ python main.py --size large
 
 ### Algorithm Parameters
 
-Edit in `main.py` (applies to all sizes):
+Edit in `main.py` (applies to all algorithms and sizes):
 
 ```python
 K = 10              # Maximum circles to select
 EPSILON = 0.2       # Approximation parameter (affects # of guesses)
+```
+
+and in `data.py`:
+
+```python
 BOUNDS = (0, 0, 1000, 1000)    # Spatial bounds
 RADIUS_RANGE = (30, 100)        # Circle radius range
 ```
 
-For `alg.py`, k = 10 and ε = 0.2 are set in `main()`. The command-line options are:
+The command-line options are:
 
 | Option | Values | Default |
 |--------|--------|---------|
 | `--size` | `small`, `medium`, `large` | `small` |
 | `--cluster` | flag | off |
-| `--algorithm` | `theorem8`, `alg5` | `theorem8` |
+| `--algorithm` | `greedy`, `theorem8`, `alg5` | `greedy` |
 | `--t` | number of thresholds for Algorithm 5 | `2` |
+| `--ui-url` | URL of the visualization server | off |
 
 ### Cluster Settings
 
@@ -249,8 +257,17 @@ Or use `--cluster` flag to enable cluster mode (auto-detects Pi cluster environm
 
 ```
 PI-Cluster/
-├── main.py              # Greedy thresholding implementation (with visualization)
-├── alg.py               # MapReduce algorithms from Liu & Vondrák (Algorithms 5, 6, 7, Theorem 8)
+├── main.py              # Start-up: command line, Spark, data, UI, runs the chosen algorithm
+├── data.py              # Dataset sizes and point/circle generation
+├── oracle.py            # Coverage oracle f(S)
+├── algorithms/
+│   ├── greedy.py        # Sequential threshold greedy
+│   ├── building_blocks.py  # Algorithms 1, 2, 3 (ThresholdGreedy, ThresholdFilter, PartitionAndSample)
+│   ├── alg5.py          # Algorithm 5 (t thresholds, 2t + 2 rounds)
+│   ├── alg6.py          # Algorithm 6 (dense inputs, 2 rounds)
+│   ├── alg7.py          # Algorithm 7 (sparse inputs, 2 rounds)
+│   └── theorem8.py      # Theorem 8 (Algorithms 6 + 7)
+├── viz_client.py        # Sends events to the visualization server
 ├── viz_server.py        # Visualization backend (FastAPI)
 ├── ui/                  # Frontend assets
 │   ├── index.html       # Dashboard UI

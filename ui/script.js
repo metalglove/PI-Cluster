@@ -1,7 +1,7 @@
 // Circle cover demo UI.
 //
-// Two drivers feed it: main.py (threshold greedy, one Spark job per pick) and alg.py
-// (Theorem 8: Algorithms 6 and 7, two MapReduce rounds). Every event they send
+// main.py feeds it, running one of the algorithms: threshold greedy (one Spark job per pick),
+// Theorem 8 (Algorithms 6 and 7, two MapReduce rounds) or Algorithm 5. Every event they send
 // (INIT, ROUND, START_GUESS, CIRCLE_ADDED, SAMPLE, GUESS_RESULT, ...) is kept
 // in a timeline. A playhead walks through it at a readable pace, so a run can be paused,
 // stepped through and rewound during a lecture. The page state is always "the result of
@@ -291,7 +291,7 @@ function reduce(s, e, index) {
             s.isFinal = true;
             s.background = [];
             if (s.algorithm === 'alg5') {
-                // Only the solutions after the last threshold count; alg.py picks the first best.
+                // Only the solutions after the last threshold count; the algorithm picks the first best.
                 const best = s.guesses.find(g => g.algo === 'alg5' && g.l === s.t && g.j === e.best_guess);
                 s.bestAlgo = 'alg5';
                 s.bestGuess = e.best_guess;
@@ -305,7 +305,7 @@ function reduce(s, e, index) {
                 break;
             }
             if (s.algorithm === 'theorem8') {
-                // The winner's best guess: the first one with the highest coverage, as alg.py picks it.
+                // The winner's best guess: the first one with the highest coverage, as the algorithm picks it.
                 const own = s.guesses.filter(g => g.algo === e.algorithm);
                 const best = own.reduce((a, g) => (!a || g.coverage > a.coverage) ? g : a, null);
                 s.bestAlgo = e.algorithm;
@@ -563,7 +563,7 @@ function renderPanels() {
     $('emptyNote').hidden = s.points.length > 0;
     $('nowLine').textContent = s.now;
 
-    const firstJ = s.algorithm === 'theorem8' ? 1 : 0;   // alg.py numbers Theorem 8's guesses from 1
+    const firstJ = s.algorithm === 'theorem8' ? 1 : 0;   // algorithms/alg6.py and alg7.py number Theorem 8's guesses from 1
     $('sGuess').textContent = s.j === null ? '–' : s.j;
     $('sGuessTotal').textContent = s.totalGuesses ? ` of ${firstJ}…${firstJ + s.totalGuesses - 1}` : '';
     $('sTau').textContent = fmtTau(s.tau);
@@ -1309,7 +1309,7 @@ async function pollCluster() {
         const res = await fetch('/cluster-status');
         const data = await res.json();
         clusterWorkers = data.status === 'error' ? [] : (data.workers || []);
-        // main.py runs as "CircleCover", alg.py as "CircleCoverMR"
+        // greedy runs as "CircleCover", theorem8 and alg5 as "CircleCoverMR"
         const mine = (data.activeapps || []).find(a => a.name.startsWith('CircleCover'));
         appState = mine ? mine.state : null;
     } catch (e) {
