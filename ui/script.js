@@ -45,6 +45,9 @@ const ALGORITHMS = {
         lede: 'Pick <i>k</i> circles that cover as many points as possible. OPT is unknown, so the algorithm ' +
             'tries a ladder of thresholds τ and keeps the best run. Every candidate check is one Spark job, ' +
             'split across the Raspberry Pis, so the number of rounds grows with <i>k</i>. ' +
+            'Each pick needs the one before it, so the rounds run one after another, and every round pays a ' +
+            'fixed cost (scheduling the job, sending S to every Pi, waiting for the slowest) that more Pis do not ' +
+            'shrink. That comes from the algorithm, not from Spark: the 2-round algorithms exist to avoid it. ' +
             'Guarantee: ½(1 − ε) of OPT.',
         code: [
             { id: 1, text: 'f(e) ← max single-circle coverage', note: '1 Spark job' },
