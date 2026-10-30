@@ -157,7 +157,7 @@ def main():
     # How much hardware runs them; the UI compares wall times across these to show the speedup
     if args.cluster:
         pis = args.pis or alive_pis()
-        hardware = {"pis": pis} if pis else {}
+        hardware = {"pis": pis, "cores_per_pi": CORES_PER_PI} if pis else {}
     else:
         hardware = {"cores": args.cores or multiprocessing.cpu_count()}
 

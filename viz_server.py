@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from typing import List, Optional, Tuple
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
@@ -60,10 +61,40 @@ class ConnectionManager:
             if unit and data.get('elapsed_s') is not None:
                 entry = {"dataset": config.get("dataset"), "algorithm": config.get("algorithm", "greedy"),
                          "t": config.get("t"), "unit": unit, "parallel": config[unit],
+                         "cores_per_pi": config.get("cores_per_pi"), "machines": config.get("machines"),
+                         "rounds": self.rounds(),
+                         "work_s": self.work_seconds(config.get("cores_per_pi") or config.get("cores") or 1),
                          "elapsed_s": data["elapsed_s"], "coverage": data.get("coverage")}
                 key = "|".join(str(entry[k]) for k in ("dataset", "algorithm", "t", "unit", "parallel"))
                 self.scaling[key] = entry
         
+    def rounds(self) -> int:
+        """MapReduce rounds of the current run, counted as the UI counts them (numbered rounds or one per job)."""
+        n = 0
+        for e in self.recorded_events:
+            if e.get('type') == 'ROUND':
+                n = max(n, e['round']) if e.get('round') else n + 1
+        return n
+
+    def work_seconds(self, cores_per_machine: int) -> float:
+        """
+        Roughly how long the machines spent computing in the current run: per round, the busiest machine's
+        partition times spread over its cores, summed over the rounds. The rest of the wall time is
+        coordination: scheduling the jobs, shipping data to the workers, and the rounds on the driver.
+        """
+        total_ms = 0.0
+        for e in self.recorded_events:
+            if e.get('type') != 'ROUND':
+                continue
+            per_machine: dict = {}
+            for p in e.get('partitions') or []:
+                if isinstance(p.get('ms'), (int, float)):
+                    key = p.get('ip') or p.get('host')
+                    per_machine[key] = per_machine.get(key, 0.0) + p['ms']
+            if per_machine:
+                total_ms += max(per_machine.values()) / cores_per_machine
+        return round(total_ms / 1000, 1)
+
     async def replay(self, websocket: WebSocket):
         for event in self.recorded_events:
             await websocket.send_text(json.dumps(event))
@@ -228,7 +259,7 @@ analysis_job: dict = {"task": None, "process": None}
 async def run_analysis(job_size: str, t: int, plan: List[Tuple[str, int]]):
     try:
         for algorithm, parallel in plan:
-            analysis["current"] = {"algorithm": algorithm, "parallel": parallel}
+            analysis["current"] = {"algorithm": algorithm, "parallel": parallel, "started_at": time.time()}
             process = start_job(algorithm, job_size, t, parallel)
             analysis_job["process"] = process
             while process.poll() is None:
@@ -271,7 +302,7 @@ async def stop_analysis():
 @app.get("/analysis")
 async def get_analysis():
     """Progress of the full analysis, and the wall time of every finished run per hardware size."""
-    return {**analysis, "results": list(manager.scaling.values())}
+    return {**analysis, "now": time.time(), "results": list(manager.scaling.values())}
 
 
 @app.get("/cluster-status")

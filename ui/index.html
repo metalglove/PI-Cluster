@@ -60,6 +60,7 @@
             <button id="themeBtn" class="btn theme-toggle" aria-label="Toggle dark mode">Dark</button>
             <div class="conn"><span class="dot" id="connDot"></span><span id="connText">Connecting</span></div>
         </div>
+        <div class="analysis-queue" id="analysisQueue" hidden aria-live="polite"></div>
     </header>
 
     <main class="layout">
@@ -182,10 +183,14 @@
             <section class="cv-scaling" id="cvScaling">
                 <h3 id="cvScalingTitle">Speedup with more Pis</h3>
                 <p class="hint" id="cvScalingLede"></p>
+                <p class="hint scaling-progress" id="cvScalingProgress" hidden></p>
+                <div class="scaling-headline" id="scalingHeadline"></div>
                 <div class="scaling-grid">
+                    <div class="scaling-bars" id="scalingBars" aria-label="Wall time per algorithm and hardware size"></div>
                     <div class="scaling-scroll"><table class="scaling-table" id="scalingTable"></table></div>
-                    <canvas class="scaling-chart" id="scalingChart" aria-label="Speedup per algorithm against the number of Pis"></canvas>
                 </div>
+                <canvas class="scaling-chart" id="scalingChart" hidden aria-label="Speedup per algorithm against the number of Pis"></canvas>
+                <p class="hint scaling-why" id="scalingWhy"></p>
             </section>
         </div>
     </div>

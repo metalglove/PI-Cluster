@@ -60,11 +60,15 @@ All of them build on Algorithm 1 (ThresholdGreedy), Algorithm 2 (ThresholdFilter
   ![Compare: the same points solved by threshold greedy, Theorem 8 and Algorithm 5](docs/compare.png)
 
 - **Choose how many Pis.** The *Pis* picker in the header runs the next job on 1, 2, … all of the cluster's workers (*Cores* when running locally).
-- **Full analysis.** Runs every algorithm on 1, 2, … N Pis, one run after another, and adds a speedup table and chart to *Compare*. Every column finds the same solution, so the only thing that changes is the wall time.
+- **Full analysis.** Runs every algorithm on 1, 2, … N Pis, one run after another. While it runs, the run controls are locked (only *Stop analysis* works) and a queue under the header shows which runs are done, which one is running and what comes next.
 
-  ![Speedup table and chart from a full analysis](docs/speedup.png)
+  ![A full analysis in progress: the queue of runs and the locked controls](docs/analysis-queue.png)
 
-  The paper's m machines are Spark partitions, with m = ⌈√(n/k)⌉ (8 for small, 15 for medium, 23 for large). m depends only on the input, not on the hardware, so adding Pis runs the same partitions side by side instead of one after another. The union of the machines' filtered circles is put back in machine order before the central greedy, so it does not depend on which Pi finishes first either. The threshold greedy barely speeds up: its ~130 tiny rounds are dominated by per-job overhead. That is the point the 2-round algorithms make.
+  When it finishes, *Compare* gets a speedup section: a summary of what more hardware bought each algorithm and how the MapReduce algorithms compare with greedy, a bar per run split into work on the machines and coordination, a table with speedup, efficiency, rounds and coverage, and a short explanation of why the speedup is not linear. Every column finds the same solution, so the only thing that changes is the wall time.
+
+  ![Speedup section of Compare after a full analysis](docs/speedup.png)
+
+  The paper's m machines are Spark partitions, with m = ⌈√(n/k)⌉ (8 for small, 15 for medium, 23 for large). m depends only on the input, not on the hardware, so adding Pis runs the same partitions side by side instead of one after another. The union of the machines' filtered circles is put back in machine order before the central greedy, so it does not depend on which Pi finishes first either. The threshold greedy barely speeds up: it needs one Spark job per pick (~130 rounds on medium), and each round pays a fixed coordination cost (scheduling the job, sending the current solution, collecting the answer) that more Pis do not shrink. The work part of each bar is the slowest machine per round, summed over the rounds; the rest of the wall time is coordination. That is the point the 2-round algorithms make.
 
 - **Present mode** (P) for a projector, chapters ([ ] or PageUp/PageDown for clickers), and a light and dark theme.
 

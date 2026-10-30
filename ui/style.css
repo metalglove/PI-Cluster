@@ -64,6 +64,7 @@ h2 { font-size: 18px; margin-bottom: 4px; }
     display: flex;
     align-items: flex-end;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: 24px;
     padding: 28px 32px 20px;
     border-bottom: 1px solid var(--rule-strong);
@@ -334,7 +335,7 @@ html.presenting .side-col { position: sticky; top: 12px; }
 .cv-empty { color: var(--ink-3); padding: 40px 0; }
 .cv-scaling { margin-top: 28px; border-top: 2px solid var(--ink); padding-top: 14px; }
 .cv-scaling h3 { font-family: var(--serif); font-size: 20px; font-weight: 600; margin: 0 0 4px; }
-.scaling-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 28px; align-items: start; margin-top: 10px; }
+.scaling-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; align-items: start; margin-top: 10px; }
 .scaling-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .scaling-table th, .scaling-table td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
 .scaling-table th:first-child, .scaling-table td:first-child { text-align: left; }
@@ -345,7 +346,39 @@ html.presenting .side-col { position: sticky; top: 12px; }
 .scaling-table .running { color: var(--ink-3); font-style: italic; }
 .scaling-table .warn { color: var(--m0); }
 .scaling-scroll { overflow-x: auto; }
-.scaling-chart { width: 100%; aspect-ratio: 4 / 3; display: block; }
+.scaling-chart { width: 100%; max-width: 640px; aspect-ratio: 16 / 9; display: block; margin-top: 18px; }
+.scaling-headline ul { margin: 10px 0 4px; padding-left: 18px; font-size: 15px; line-height: 1.5; }
+.scaling-headline b { font-weight: 600; }
+.scaling-progress { color: var(--ink); }
+.scaling-why { margin-top: 14px; max-width: 900px; line-height: 1.5; }
+.scaling-why b { color: var(--ink); font-weight: 600; }
+.cv-hw { margin: -4px 0 8px; font-size: 13px; color: var(--ink-3); font-family: var(--mono); }
+#scalingBars { max-width: 960px; }
+.sb-group { margin-bottom: 14px; }
+.sb-name { font-size: 14px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+.sb-name .swatch { width: 10px; height: 10px; border-radius: 2px; background: var(--c); display: inline-block; }
+.sb-row { display: grid; grid-template-columns: 56px minmax(0, 1fr) 150px; align-items: center; gap: 8px; margin: 3px 0; }
+.sb-hw { font-size: 12px; color: var(--ink-3); }
+.sb-track { height: 14px; display: block; }
+.sb-bar { display: flex; height: 100%; }
+.sb-work { background: var(--c); }
+.sb-coord { background: color-mix(in srgb, var(--c) 30%, var(--surface)); border-radius: 0 4px 4px 0; margin-left: 2px; }
+.sb-legend { display: flex; gap: 16px; font-size: 12px; color: var(--ink-3); margin: 2px 0 10px; flex-wrap: wrap; }
+.sb-legend i { display: inline-block; width: 18px; height: 10px; vertical-align: -1px; margin-right: 5px; border-radius: 2px; }
+.sb-legend .k-work { background: var(--ink-3); }
+.sb-legend .k-coord { background: color-mix(in srgb, var(--ink-3) 30%, var(--surface)); }
+/* Full analysis queue, under the header while it runs */
+.analysis-queue { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; margin-top: 10px; }
+.analysis-queue[hidden] { display: none; }
+.aq-title { font-weight: 600; margin-right: 4px; }
+.aq-item { border: 1px solid var(--rule-strong); border-radius: 999px; padding: 2px 10px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.aq-item.done { color: var(--ink); border-color: var(--rule); }
+.aq-item.done::before { content: '✓ '; }
+.aq-item.running { color: var(--paper); background: var(--ink); border-color: var(--ink); }
+.aq-item.running::before { content: '▶ '; }
+.aq-item.stopped { text-decoration: line-through; }
+.sb-val { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+.sb-val small { color: var(--ink-3); }
 
 /* ---------- Narrow screens ---------- */
 @media (max-width: 1000px) {
@@ -366,3 +399,4 @@ html.presenting .side-col { position: sticky; top: 12px; }
     .parts { flex-wrap: wrap; }
     .part { flex: 1 1 calc(25% - 4px) !important; min-height: 52px; }
 }
+.locked { opacity: 0.45; pointer-events: none; }
