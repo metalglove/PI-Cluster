@@ -1186,13 +1186,13 @@ function drawMiniFigure(canvas, run) {
     }
 }
 
-// "on 2 Pis (8 cores) · m = 23 machines", from a run's INIT config
+// "on 2 Pis (8 cores) · m = 23 partitions (the paper's machines)", from a run's INIT config
 function hardwareText(config) {
     const parts = [];
     if (config.pis) parts.push(`on ${config.pis} ${unitName('pis', config.pis)}` +
         (config.cores_per_pi ? ` (${config.pis * config.cores_per_pi} cores)` : ''));
     else if (config.cores) parts.push(`on ${config.cores} ${unitName('cores', config.cores)}`);
-    if (config.machines) parts.push(`m = ${config.machines} machines`);
+    if (config.machines) parts.push(`m = ${config.machines} partitions (the paper's machines)`);
     return parts.join(' · ') || '&nbsp;';
 }
 
@@ -1457,7 +1457,7 @@ function renderScaling() {
     const waves = n => Math.ceil(any.machines / coresOf(n));
     const g = greedy && greedy.byN.has(hi) ? split(greedy.byN.get(hi)) : null;
     $('scalingWhy').innerHTML = any.machines ? `<b>Why not ${hi / lo}×?</b> The input is split into m = ${any.machines} ` +
-        `machines (partitions), the same on any hardware. ${sizes.map(n => (unit === 'pis' ? `${hw(n)} = ${coresOf(n)} cores ` : `${hw(n)} `) +
+        `partitions (the paper's machines), the same on any hardware. ${sizes.map(n => (unit === 'pis' ? `${hw(n)} = ${coresOf(n)} cores ` : `${hw(n)} `) +
         `run${unit !== 'pis' && n === 1 ? 's' : ''} them in ${waves(n)} wave${waves(n) === 1 ? '' : 's'}`).join(', ')}, so the work on the machines can get at most ` +
         `${(waves(lo) / waves(hi)).toFixed(1)}× faster. Coordination (scheduling each Spark job, sending the points and ` +
         `the current solution to every machine, the central rounds on the driver) does not shrink with more ${U}. ` +
@@ -1465,8 +1465,8 @@ function renderScaling() {
             `${(g.coord / greedy.rounds).toFixed(1)} s per round on ${hw(hi)}, ${Math.round(100 * g.share)}% of its wall time. ` +
             `The more rounds an algorithm needs, the more coordination dominates.` : '') : '';
 
-    $('scalingChart').hidden = sizes.length < 3;
-    if (sizes.length >= 3) drawScalingChart($('scalingChart'), unit, sizes, rows);
+    $('scalingChart').hidden = sizes.length < 2;
+    if (sizes.length >= 2) drawScalingChart($('scalingChart'), unit, sizes, rows);
 }
 
 const fmtS = s => s >= 120 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${s.toFixed(1)} s`;
