@@ -1268,14 +1268,21 @@ const planName = a => ALGORITHMS[a] ? ALGORITHMS[a].name : 'Frequency moment';
 
 const unitName = (unit, n) => unit === 'pis' ? (n === 1 ? 'Pi' : 'Pis') : (n === 1 ? 'core' : 'cores');
 
+let analysisSeq = 0;   // replies to overlapping polls can arrive out of order: only the newest counts
+
 async function refreshAnalysis() {
+    const seq = ++analysisSeq;
+    let next;
+    try { next = await (await fetch('/analysis', { cache: 'no-store' })).json(); } catch (e) { return; }
+    if (seq !== analysisSeq) return;   // a newer reply is already in (or on its way): don't go back to "running"
     const wasRunning = analysis.running;
-    try { analysis = await (await fetch('/analysis')).json(); } catch (e) { return; }
+    analysis = next;
     renderAnalysisButton();
     if (wasRunning && !analysis.running) {
-        // finished: show the result
-        if (analysis.kind === 'kfm') showKfm(true);
-        else if (analysis.kind === 'speedup') showSpeedup(true);
+        // finished: show the result, and the header is free again
+        renderRunButton();
+        if (analysis.kind === 'kfm') { $('kfmView').hidden = false; renderKfm(); }
+        else if (analysis.kind === 'speedup') { $('speedupView').hidden = false; renderSpeedup(); }
         else showCompare(true);
     } else {
         if (!$('compareView').hidden) renderScaling();
@@ -1861,6 +1868,8 @@ function connect() {
 }
 
 async function pollCluster() {
+    // /cluster-status asks the Spark master and can be slow while jobs run: don't let it hold up the analysis
+    const analysisPolled = refreshAnalysis();
     try {
         const res = await fetch('/cluster-status');
         const data = await res.json();
@@ -1877,7 +1886,7 @@ async function pollCluster() {
     }
     renderCluster();
     renderHwPicker();
-    await refreshAnalysis();
+    await analysisPolled;
     renderRunButton();
 }
 
