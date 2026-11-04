@@ -1122,7 +1122,7 @@ document.querySelectorAll('button').forEach(b => b.addEventListener('mouseup', (
 // chapter, P present, C compare, Esc close.
 document.addEventListener('keydown', e => {
     if (e.target.closest('input, select')) return;
-    if (e.key === 'Escape') { setPresenting(false); showCompare(false); return; }
+    if (e.key === 'Escape') { setPresenting(false); showCompare(false); showKfm(false); return; }
     if (e.key === ' ') { e.preventDefault(); $('pbPlay').click(); }
     else if (e.key === 'ArrowRight') $('pbFwd').click();
     else if (e.key === 'ArrowLeft') $('pbBack').click();
@@ -1130,6 +1130,7 @@ document.addEventListener('keydown', e => {
     else if (e.key === '[' || e.key === 'PageUp') { e.preventDefault(); jumpChapter(-1); }
     else if (e.key === 'p' || e.key === 'P') setPresenting(!document.documentElement.classList.contains('presenting'));
     else if (e.key === 'c' || e.key === 'C') showCompare($('compareView').hidden);
+    else if (e.key === 'f' || e.key === 'F') showKfm($('kfmView').hidden);
 });
 
 // --- Presenter mode ---
@@ -1261,14 +1262,22 @@ let analysis = { running: false, plan: [], done: 0, results: [] };
 let hw = { unit: 'pis', max: 0 };   // what the next run can use, from /cluster-status
 let hwTouched = false;               // keep the user's pick across polls
 
+// Name of a run in an analysis plan: a circle cover algorithm, or the k-th frequency moment
+const planName = a => ALGORITHMS[a] ? ALGORITHMS[a].name : 'Frequency moment';
+
 const unitName = (unit, n) => unit === 'pis' ? (n === 1 ? 'Pi' : 'Pis') : (n === 1 ? 'core' : 'cores');
 
 async function refreshAnalysis() {
     const wasRunning = analysis.running;
     try { analysis = await (await fetch('/analysis')).json(); } catch (e) { return; }
     renderAnalysisButton();
-    if (wasRunning && !analysis.running) showCompare(true);   // finished: show the result
-    else if (!$('compareView').hidden) renderScaling();
+    if (wasRunning && !analysis.running) {
+        // finished: show the result
+        if (analysis.kind === 'kfm') showKfm(true); else showCompare(true);
+    } else {
+        if (!$('compareView').hidden) renderScaling();
+        if (!$('kfmView').hidden) renderKfm();
+    }
 }
 
 function renderAnalysisButton() {
@@ -1290,10 +1299,12 @@ function renderAnalysisQueue() {
     q.hidden = !analysis.running;
     if (!analysis.running) return;
     const unit = analysis.unit || 'pis';
-    const timeOf = (a, n) => (analysis.results || []).find(r => r.algorithm === a && r.parallel === n && r.unit === unit &&
-        (r.dataset || '').startsWith(analysis.size + '/') && (a !== 'alg5' || r.t === analysis.t));
+    const timeOf = (a, n) => a === 'kfm'
+        ? kfmRunOf(analysis.size, analysis.moment, unit, n)
+        : (analysis.results || []).find(r => r.algorithm === a && r.parallel === n && r.unit === unit &&
+            (r.dataset || '').startsWith(analysis.size + '/') && (a !== 'alg5' || r.t === analysis.t));
     const items = analysis.plan.map(([a, n], i) => {
-        const label = `${ALGORITHMS[a].name} · ${n} ${unitName(unit, n)}`;
+        const label = `${planName(a)} · ${n} ${unitName(unit, n)}`;
         if (i < analysis.done) {
             const r = timeOf(a, n);
             return `<span class="aq-item done">${label}${r ? ` · ${fmtS(r.elapsed_s)}` : ''}</span>`;
@@ -1304,7 +1315,12 @@ function renderAnalysisQueue() {
         }
         return `<span class="aq-item">${label}</span>`;
     });
-    q.innerHTML = `<span class="aq-title">Full analysis, ${analysis.size}:</span>${items.join('')}`;
+    const title = analysis.kind === 'kfm' ? `Frequency moment, n = ${KFM_N[analysis.size]}, k = ${analysis.moment}:`
+        : `Full analysis, ${analysis.size}:`;
+    q.innerHTML = `<span class="aq-title">${title}</span>${items.join('')}`;
+    if (analysis.kind === 'kfm') {
+        $('kfmQueue').innerHTML = items.join('');
+    }
 }
 
 $('analysisBtn').addEventListener('click', async () => {
@@ -1367,7 +1383,7 @@ function renderScaling() {
     $('cvScalingTitle').textContent = `Speedup with more ${U}`;
     const progress = analysis.running
         ? `Full analysis running: run ${analysis.done + 1} of ${analysis.plan.length}` +
-          (analysis.current ? ` (${ALGORITHMS[analysis.current.algorithm].name} on ${analysis.current.parallel} ` +
+          (analysis.current ? ` (${planName(analysis.current.algorithm)} on ${analysis.current.parallel} ` +
               `${unitName(analysis.unit, analysis.current.parallel)})` : '') + '.'
         : '';
     $('cvScalingProgress').textContent = progress;
@@ -1508,7 +1524,7 @@ function drawScalingChart(canvas, unit, sizes, rows) {
         ctx.beginPath(); pts.forEach(([x, y], j) => j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
         pts.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); });
         const [lx, ly] = pts[pts.length - 1];
-        labels.push({ text: ALGORITHMS[r.algorithm].name, color, x: lx - 6, y: ly - 6 });
+        labels.push({ text: planName(r.algorithm), color, x: lx - 6, y: ly - 6 });
     });
     // labels at the lines' ends, pushed apart so close lines stay readable
     labels.sort((a, b) => a.y - b.y);
@@ -1522,6 +1538,177 @@ $('compareBtn').addEventListener('click', () => showCompare(true));
 $('cvClose').addEventListener('click', () => showCompare(false));
 $('compareView').addEventListener('click', e => { if (e.target === $('compareView')) showCompare(false); });
 
+// --- The k-th frequency moment: the same string on 1, 2, ... N Pis (or cores) ---
+// main.py --algorithm kfm sends one KFM_RESULT per run, with its wall time per Spark stage; viz_server
+// keeps the latest per size, k and hardware size. Its own analysis runs it on every hardware size.
+const KFM_N = { small: '1M', medium: '10M', large: '30M' };
+const KFM_STAGES = ['μ₁', 'ρ₁ + μ₂', 'ρ₂'];
+const KFM_CODE = [
+    { head: 'Round 1' },
+    { text: 'Mapper μ₁(⟨i; x<sub>i</sub>⟩) = ⟨x<sub>i</sub>; i⟩' },
+    { note: 'shuffle: all positions of one symbol go to one reducer' },
+    { text: 'Reducer ρ₁(⟨x<sub>i</sub>; {v₁, …, v<sub>m</sub>}⟩) = ⟨x<sub>i</sub>; m<sup>k</sup>⟩' },
+    { head: 'Round 2' },
+    { text: 'Mapper μ₂(⟨x<sub>i</sub>; v⟩) = ⟨$; v⟩' },
+    { note: 'shuffle: every pair goes to the one reducer for $' },
+    { text: 'Reducer ρ₂(⟨$; {v₁, …, v<sub>ℓ</sub>}⟩) = ⟨$; Σ<sub>i=1…ℓ</sub> v<sub>i</sub>⟩' },
+    { head: 'Output' },
+    { text: 'f<sub>k</sub>(x) = the value of ⟨$; …⟩' }
+];
+$('kfmCode').innerHTML = KFM_CODE.map(l => l.head ? `<li class="head">${l.head}</li>`
+    : l.note ? `<li class="note i1">${l.note}</li>` : `<li>${l.text}</li>`).join('');
+
+let kfmTouched = false;   // after the user picks n or k, show those instead of the last frequency moment analysis'
+const kfmSelectedSize = () => document.querySelector('input[name="kfmSize"]:checked').value;
+const kfmFollowsAnalysis = () => analysis.kind === 'kfm' && analysis.size && (analysis.running || !kfmTouched);
+const kfmSize = () => kfmFollowsAnalysis() ? analysis.size : kfmSelectedSize();
+const kfmK = () => kfmFollowsAnalysis() ? analysis.moment : Number($('kfmK').value);
+const kfmRunOf = (size, k, unit, n) => (analysis.kfm_results || []).find(r =>
+    r.size === size && r.k === k && r.unit === unit && r.parallel === n);
+
+function kfmRows() {
+    const size = kfmSize(), k = kfmK();
+    const mine = (analysis.kfm_results || []).filter(r => r.size === size && r.k === k && r.parallel);
+    const unit = mine.some(r => r.unit === 'pis') ? 'pis' : 'cores';
+    const runs = mine.filter(r => r.unit === unit).sort((a, b) => a.parallel - b.parallel);
+    return { size, k, unit, runs };
+}
+
+async function showKfm(on) {
+    $('kfmView').hidden = !on;
+    if (!on) return;
+    await refreshAnalysis();
+    renderKfm();
+}
+
+function renderKfm() {
+    const unitNow = analysis.unit || hw.unit;
+    const U = unitNow === 'pis' ? 'Pis' : 'cores';
+    document.querySelectorAll('.kfm-unit').forEach(el => { el.textContent = U; });
+    const mineRunning = analysis.running && analysis.kind === 'kfm';
+    const btn = $('kfmRun');
+    btn.textContent = mineRunning ? `Stop (run ${analysis.done + 1} of ${analysis.plan.length})`
+        : `Run on 1, 2, … all ${U}`;
+    btn.disabled = !wsOpen || (analysis.running && !mineRunning) || (!analysis.running && runInProgress());
+    document.querySelectorAll('input[name="kfmSize"], #kfmK').forEach(el => { el.disabled = mineRunning; });
+    if (kfmFollowsAnalysis()) {
+        // the pickers show what the results below were run with
+        document.querySelector(`input[name="kfmSize"][value="${analysis.size}"]`).checked = true;
+        $('kfmK').value = String(analysis.moment);
+    }
+    $('kfmQueue').hidden = !mineRunning;
+
+    const { size, k, unit, runs } = kfmRows();
+    const hwText = n => `${n} ${unitName(unit, n)}`;
+    if (!runs.length) {
+        $('kfmLede').textContent = mineRunning
+            ? `Running on 1 ${unitName(unitNow, 1)} first. Each bar appears as its run finishes.`
+            : `No runs with n = ${KFM_N[size]} and k = ${k} yet. Press “${btn.textContent}” ` +
+              `to run the algorithm on every number of ${U}, one after another.`;
+        ['kfmHeadline', 'kfmBars', 'kfmTable', 'kfmWhy'].forEach(id => { $(id).innerHTML = ''; });
+        $('kfmChart').hidden = true;
+        return;
+    }
+    const base = runs[0], top = runs[runs.length - 1];
+    const fks = [...new Set(runs.map(r => String(r.f_k)))];
+    $('kfmLede').innerHTML = `A random string of n = ${fmt(base.n)} symbols over |Σ| = ${fmt(base.symbols)} symbols, ` +
+        `in ${base.partitions} input partitions, k = ${k}. Wall time is the algorithm itself, from its first Spark job to ` +
+        `f<sub>k</sub>(x), with the input already on the machines.`;
+
+    const lines = [];
+    if (top !== base) {
+        const x = base.elapsed_s / top.elapsed_s;
+        lines.push(`<li><b>${hwText(top.parallel)}</b>: ${x.toFixed(2)}× faster than ${hwText(base.parallel)} ` +
+            `(${fmtS(base.elapsed_s)} → ${fmtS(top.elapsed_s)}), ${Math.round(100 * x / (top.parallel / base.parallel))}% of linear.</li>`);
+    }
+    lines.push(fks.length === 1
+        ? `<li>f<sub>${k}</sub>(x) = <b>${fmt(Number(fks[0]))}</b> on every run` +
+          (runs.every(r => r.check) ? ', and the same as counting on the driver.' : '.') + '</li>'
+        : `<li class="warn">The runs disagree on f<sub>${k}</sub>(x): ${fks.join(' / ')}.</li>`);
+    $('kfmHeadline').innerHTML = `<ul>${lines.join('')}</ul>`;
+
+    // One bar per hardware size, split into the 3 stages, all on the same scale
+    const stageS = r => KFM_STAGES.map((_, i) => (r.stages && r.stages[i]) ? r.stages[i].s : 0);
+    const maxS = Math.max(...runs.map(r => r.elapsed_s));
+    $('kfmBars').innerHTML = `<div class="sb-legend">${KFM_STAGES.map((name, i) =>
+        `<span><i style="background:${C.machines[i]}"></i>${name}</span>`).join('')}<span>rest: scheduling the job</span></div>` +
+        runs.map(r => {
+            const parts = stageS(r);
+            const rest = Math.max(0, r.elapsed_s - parts.reduce((a, b) => a + b, 0));
+            const speedup = base.elapsed_s / r.elapsed_s;
+            const tip = `${hwText(r.parallel)}: ${r.elapsed_s.toFixed(1)} s. ` +
+                parts.map((s, i) => `${KFM_STAGES[i]} ${s.toFixed(1)} s`).join(', ') + `, other ${rest.toFixed(1)} s.`;
+            return `<div class="kb-row" title="${tip}">
+                <span class="kb-hw">${hwText(r.parallel)}</span>
+                <span class="kb-track" style="width:${Math.max(1, 100 * r.elapsed_s / maxS)}%">
+                    ${parts.map((s, i) => `<span style="flex:${s};--c:${C.machines[i]}"></span>`).join('')}
+                    <span style="flex:${rest};--c:var(--rule-strong)"></span></span>
+                <span class="kb-val">${fmtS(r.elapsed_s)}${r === base ? '' : ` <small>${speedup.toFixed(2)}×</small>`}</span>
+            </div>`;
+        }).join('');
+
+    // Speedup against hardware size, with the ideal (linear) speedup dashed
+    $('kfmChart').hidden = runs.length < 2;
+    if (runs.length >= 2) {
+        drawScalingChart($('kfmChart'), unit, runs.map(r => r.parallel),
+            [{ algorithm: 'kfm', base, byN: new Map(runs.map(r => [r.parallel, r])) }]);
+    }
+
+    // Table: time per stage, speedup, efficiency, and which machines ran the tasks
+    const hostsOf = r => {
+        const tasks = {};
+        (r.stages || []).forEach(st => Object.entries(st.hosts || {}).forEach(([h, v]) => { tasks[h] = (tasks[h] || 0) + v.tasks; }));
+        return Object.entries(tasks).sort().map(([h, n]) => `${h}: ${fmt(n)}`).join('<br>');
+    };
+    $('kfmTable').innerHTML = `<thead><tr><th>${unit === 'pis' ? 'Pis' : 'Cores'}</th><th>Wall time</th><th>Speedup</th>` +
+        `<th>Efficiency</th>${KFM_STAGES.map(n => `<th>${n}</th>`).join('')}<th>f<sub>${k}</sub>(x)</th><th>Tasks per machine</th></tr></thead><tbody>` +
+        runs.map(r => {
+            const speedup = base.elapsed_s / r.elapsed_s;
+            return `<tr><td>${hwText(r.parallel)}</td><td>${r.elapsed_s.toFixed(1)} s</td><td>${speedup.toFixed(2)}×</td>` +
+                `<td>${Math.round(100 * speedup / (r.parallel / base.parallel))}%</td>` +
+                stageS(r).map(s => `<td>${s.toFixed(1)} s</td>`).join('') +
+                `<td>${fmt(r.f_k)}${r.check ? '' : ' <span class="warn">≠ driver</span>'}</td><td>${hostsOf(r)}</td></tr>`;
+        }).join('') + '</tbody>';
+
+    const cores = n => unit === 'pis' ? n * (base.cores_per_pi || 4) : n;
+    const perCore = n => Math.ceil(base.partitions / cores(n));
+    $('kfmWhy').innerHTML = `<b>Why it speeds up.</b> μ₁ works on the ${fmt(base.n)} pairs in ${base.partitions} partitions and ` +
+        `ρ₁ on the ${fmt(base.symbols)} symbols, each part independently of the others: ${runs.map(r => `${hwText(r.parallel)} ` +
+        `${r.parallel === 1 ? 'runs' : 'run'} ${perCore(r.parallel)} input partition${perCore(r.parallel) === 1 ? '' : 's'} per core`).join(', ')}. ` +
+        `Both rounds are one Spark job, so the fixed cost of coordinating it is paid once, not once per step as in the threshold greedy. ` +
+        `<b>Why not linear.</b> The shuffles send every pair ⟨x<sub>i</sub>; i⟩ over the network to its symbol's reducer, ` +
+        `and ρ₂ runs on a single machine: all ${fmt(base.symbols)} values meet at the key $. ` +
+        `The largest round-1 reducer holds ${fmt(base.largest_reducer)} of the ${fmt(base.n)} pairs; a string of one repeated ` +
+        `symbol would put all of them on one machine and nothing would speed up.`;
+}
+
+$('kfmBtn').addEventListener('click', () => showKfm(true));
+$('kfmClose').addEventListener('click', () => showKfm(false));
+$('kfmView').addEventListener('click', e => { if (e.target === $('kfmView')) showKfm(false); });
+document.querySelectorAll('input[name="kfmSize"]').forEach(r => r.addEventListener('change', () => {
+    kfmTouched = true;
+    renderKfm();
+}));
+$('kfmK').addEventListener('change', () => { kfmTouched = true; renderKfm(); });
+$('kfmRun').addEventListener('click', async () => {
+    try {
+        if (analysis.running) {
+            await fetch('/analysis/stop', { method: 'POST' });
+        } else {
+            kfmTouched = false;
+            await fetch('/kfm/analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ size: kfmSelectedSize(), k: Number($('kfmK').value) })
+            });
+        }
+    } catch (e) {
+        console.error('Frequency moment request failed', e);
+    }
+    await refreshAnalysis();
+    renderKfm();
+});
+
 // --- Theme ---
 function renderThemeButton() {
     $('themeBtn').textContent = document.documentElement.dataset.theme === 'dark' ? 'Light' : 'Dark';
@@ -1533,6 +1720,7 @@ $('themeBtn').addEventListener('click', () => {
     readPalette();
     renderThemeButton();
     renderPanels();
+    if (!$('kfmView').hidden) renderKfm();
 });
 renderThemeButton();
 
@@ -1591,6 +1779,8 @@ function connect() {
     };
     ws.onmessage = ev => {
         const e = JSON.parse(ev.data);
+        // the frequency moment is not a circle run: it only feeds its own view, never the timeline
+        if (e.type === 'KFM_RESULT') { refreshAnalysis(); return; }
         if (e.type === 'INIT') submitting = false;
         receive(e);
     };

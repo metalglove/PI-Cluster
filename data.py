@@ -1,6 +1,7 @@
 """
 Input data for the circle cover problem: points to cover, and candidate circles to cover them with.
 Every algorithm runs on the same data for a given size, so their results can be compared directly.
+Also the input string for the k-th frequency moment (--algorithm kfm), see generate_string_pairs.
 """
 
 import random
@@ -124,3 +125,45 @@ def generate_dataset(size: str) -> Tuple[List[Point], List[Circle]]:
                                        cluster_std=CLUSTER_STD, seed=SEED)
     circles = generate_circles(config["N_CIRCLES"], BOUNDS, RADIUS_RANGE, seed=SEED + 1)
     return points, circles
+
+
+# =============================================================================
+# INPUT STRING FOR THE k-th FREQUENCY MOMENT
+# =============================================================================
+
+# Length n of the generated string per size. Much longer than the circle inputs: each symbol is
+# little work, so it takes millions of them before the machines' work outweighs Spark's overhead.
+STRING_SIZES = {"small": 1_000_000, "medium": 10_000_000, "large": 30_000_000}
+# Symbols are the numbers 0 .. |Sigma| - 1, drawn uniformly
+STRING_ALPHABET_SIZE = 1000
+# The string is generated in this many chunks, one per input partition. Fixed, so the string (and f_k)
+# is the same on any number of Pis, and it divides evenly over 1, 2, 3, 5 Pis of 4 cores (4, 8, 12, 20 cores).
+STRING_CHUNKS = 120
+
+
+def string_chunk(c: int, n: int):
+    """Positions (1-based) and symbols of chunk c of the generated string of length n, as numpy arrays."""
+    import numpy as np
+    start, end = c * n // STRING_CHUNKS, (c + 1) * n // STRING_CHUNKS
+    symbols = np.random.default_rng([SEED, c]).integers(0, STRING_ALPHABET_SIZE, size=end - start)
+    return np.arange(start + 1, end + 1), symbols
+
+
+def generate_string_pairs(sc, n: int):
+    """
+    The input pairs <i; x_i> of a random string of length n, generated on the machines themselves
+    (each partition makes its own chunk), so the driver does not have to send n pairs over the network.
+    """
+    def chunk_pairs(c):
+        positions, symbols = string_chunk(c, n)
+        return zip(positions.tolist(), symbols.tolist())
+    return sc.parallelize(range(STRING_CHUNKS), STRING_CHUNKS).flatMap(chunk_pairs)
+
+
+def string_counts(n: int) -> dict:
+    """How often each symbol occurs in the generated string, counted on the driver (to check the answer)."""
+    import numpy as np
+    counts = np.zeros(STRING_ALPHABET_SIZE, dtype=np.int64)
+    for c in range(STRING_CHUNKS):
+        counts += np.bincount(string_chunk(c, n)[1], minlength=STRING_ALPHABET_SIZE)
+    return {s: int(m) for s, m in enumerate(counts) if m}

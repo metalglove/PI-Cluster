@@ -381,12 +381,33 @@ html.presenting .side-col { position: sticky; top: 12px; }
 .sb-val { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
 .sb-val small { color: var(--ink-3); }
 
+/* ---------- k-th frequency moment ---------- */
+.kfm-grid { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 32px; align-items: start; }
+.kfm-algo h3 { font-family: var(--serif); font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+.kfm-algo .code li.note { font-family: var(--sans); font-size: 12px; color: var(--ink-3); }
+.kfm-stages { margin-top: 12px; line-height: 1.6; }
+.kfm-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: var(--c); margin: 0 4px 0 2px; vertical-align: -1px; }
+.kfm-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+.kfm-queue { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; margin: 0 0 10px; }
+.kfm-queue[hidden] { display: none; }
+.kfm-results { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; align-items: start; margin: 8px 0 14px; }
+.kfm-results .scaling-chart { margin-top: 0; }
+.kb-row { display: grid; grid-template-columns: 56px minmax(0, 1fr) 120px; align-items: center; gap: 8px; margin: 6px 0; }
+.kb-track { height: 18px; display: flex; gap: 2px; }
+.kb-track span { background: var(--c); height: 100%; }
+.kb-track span:last-child { border-radius: 0 4px 4px 0; }
+.kb-val { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+.kb-val small { color: var(--ink-3); }
+.kb-hw { font-size: 12px; color: var(--ink-3); }
+.kfm-results .sb-legend { margin-top: 0; }
+
 /* ---------- Narrow screens ---------- */
 @media (max-width: 1000px) {
     .layout { grid-template-columns: minmax(0, 1fr); padding: 16px; }
     .masthead { flex-direction: column; align-items: flex-start; padding: 20px 16px 16px; }
     .run-block { justify-content: flex-start; }
     .lane { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .kfm-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 560px) {
@@ -396,6 +417,7 @@ html.presenting .side-col { position: sticky; top: 12px; }
     .ledger { grid-template-columns: 1fr; gap: 10px; }
     .cv-cols { grid-template-columns: 1fr; }
     .scaling-grid { grid-template-columns: 1fr; }
+    .kfm-grid, .kfm-results { grid-template-columns: 1fr; }
     .scaling-table { font-size: 12px; }
     .parts { flex-wrap: wrap; }
     .part { flex: 1 1 calc(25% - 4px) !important; min-height: 52px; }
