@@ -56,6 +56,7 @@
             <button id="runBtn" class="btn btn-primary">Run on cluster</button>
             <button id="compareBtn" class="btn">Compare</button>
             <button id="kfmBtn" class="btn" title="The k-th frequency moment on 1, 2, … all Pis (F)">Frequency moment</button>
+            <button id="speedupBtn" class="btn" title="The selected algorithm on 1, 2, … all Pis: its speedup (S)">Speedup</button>
             <button id="analysisBtn" class="btn" title="Run every algorithm on 1, 2, … all Pis and compare the wall times">Full analysis</button>
             <button id="presentBtn" class="btn" title="Full screen, larger text (P)">Present</button>
             <button id="themeBtn" class="btn theme-toggle" aria-label="Toggle dark mode">Dark</button>
@@ -193,6 +194,30 @@
                 <canvas class="scaling-chart" id="scalingChart" hidden aria-label="Speedup per algorithm against the number of Pis"></canvas>
                 <p class="hint scaling-why" id="scalingWhy"></p>
             </section>
+        </div>
+    </div>
+
+    <div class="compare-view" id="speedupView" hidden>
+        <div class="cv-inner card">
+            <div class="cv-head">
+                <div>
+                    <h2 id="suTitle">Speedup with more Pis</h2>
+                    <p class="hint" id="suLede"></p>
+                </div>
+                <div class="su-actions">
+                    <button class="btn btn-primary" id="suRun">Run on 1, 2, … all Pis</button>
+                    <button class="btn" id="suClose">Close (Esc)</button>
+                </div>
+            </div>
+            <div class="kfm-queue" id="suQueue" hidden aria-live="polite"></div>
+            <p class="hint scaling-progress" id="suProgress" hidden></p>
+            <div class="scaling-headline" id="suHeadline"></div>
+            <div class="kfm-results">
+                <div class="scaling-bars" id="suBars" aria-label="Wall time per hardware size"></div>
+                <canvas class="scaling-chart" id="suChart" hidden aria-label="Speedup against the number of Pis"></canvas>
+            </div>
+            <div class="scaling-scroll"><table class="scaling-table" id="suTable"></table></div>
+            <p class="hint scaling-why" id="suWhy"></p>
         </div>
     </div>
 

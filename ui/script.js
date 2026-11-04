@@ -1122,7 +1122,7 @@ document.querySelectorAll('button').forEach(b => b.addEventListener('mouseup', (
 // chapter, P present, C compare, Esc close.
 document.addEventListener('keydown', e => {
     if (e.target.closest('input, select')) return;
-    if (e.key === 'Escape') { setPresenting(false); showCompare(false); showKfm(false); return; }
+    if (e.key === 'Escape') { setPresenting(false); showCompare(false); showKfm(false); showSpeedup(false); return; }
     if (e.key === ' ') { e.preventDefault(); $('pbPlay').click(); }
     else if (e.key === 'ArrowRight') $('pbFwd').click();
     else if (e.key === 'ArrowLeft') $('pbBack').click();
@@ -1131,6 +1131,7 @@ document.addEventListener('keydown', e => {
     else if (e.key === 'p' || e.key === 'P') setPresenting(!document.documentElement.classList.contains('presenting'));
     else if (e.key === 'c' || e.key === 'C') showCompare($('compareView').hidden);
     else if (e.key === 'f' || e.key === 'F') showKfm($('kfmView').hidden);
+    else if (e.key === 's' || e.key === 'S') showSpeedup($('speedupView').hidden);
 });
 
 // --- Presenter mode ---
@@ -1267,22 +1268,32 @@ const planName = a => ALGORITHMS[a] ? ALGORITHMS[a].name : 'Frequency moment';
 
 const unitName = (unit, n) => unit === 'pis' ? (n === 1 ? 'Pi' : 'Pis') : (n === 1 ? 'core' : 'cores');
 
+let analysisSeq = 0;   // replies to overlapping polls can arrive out of order: only the newest counts
+
 async function refreshAnalysis() {
+    const seq = ++analysisSeq;
+    let next;
+    try { next = await (await fetch('/analysis', { cache: 'no-store' })).json(); } catch (e) { return; }
+    if (seq !== analysisSeq) return;   // a newer reply is already in (or on its way): don't go back to "running"
     const wasRunning = analysis.running;
-    try { analysis = await (await fetch('/analysis')).json(); } catch (e) { return; }
+    analysis = next;
     renderAnalysisButton();
     if (wasRunning && !analysis.running) {
-        // finished: show the result
-        if (analysis.kind === 'kfm') showKfm(true); else showCompare(true);
+        // finished: show the result, and the header is free again
+        renderRunButton();
+        if (analysis.kind === 'kfm') { $('kfmView').hidden = false; renderKfm(); }
+        else if (analysis.kind === 'speedup') { $('speedupView').hidden = false; renderSpeedup(); }
+        else showCompare(true);
     } else {
         if (!$('compareView').hidden) renderScaling();
+        if (!$('speedupView').hidden) renderSpeedup();
         if (!$('kfmView').hidden) renderKfm();
     }
 }
 
 function renderAnalysisButton() {
     const btn = $('analysisBtn');
-    btn.textContent = analysis.running ? `Stop analysis (${analysis.done + 1} of ${analysis.plan.length})` : 'Full analysis';
+    btn.textContent = analysis.running ? `Stop ${analysis.kind === 'speedup' ? 'speedup' : 'analysis'} (${analysis.done + 1} of ${analysis.plan.length})` : 'Full analysis';
     btn.classList.toggle('btn-primary', analysis.running);
     btn.disabled = !wsOpen || (!analysis.running && runInProgress());
     // While the analysis runs it picks the algorithm, size and hardware itself: only Stop stays usable
@@ -1316,10 +1327,14 @@ function renderAnalysisQueue() {
         return `<span class="aq-item">${label}</span>`;
     });
     const title = analysis.kind === 'kfm' ? `Frequency moment, n = ${KFM_N[analysis.size]}, k = ${analysis.moment}:`
+        : analysis.kind === 'speedup' ? `Speedup, ${planName(analysis.algorithm)}, ${analysis.size}:`
         : `Full analysis, ${analysis.size}:`;
     q.innerHTML = `<span class="aq-title">${title}</span>${items.join('')}`;
     if (analysis.kind === 'kfm') {
         $('kfmQueue').innerHTML = items.join('');
+    }
+    if (analysis.kind === 'speedup') {
+        $('suQueue').innerHTML = items.join('');
     }
 }
 
@@ -1358,6 +1373,7 @@ let sizeTouched = false;   // after the user picks a size, show that one instead
 document.querySelectorAll('input[name="jobSize"]').forEach(r => r.addEventListener('change', () => {
     sizeTouched = true;
     if (!$('compareView').hidden) renderScaling();
+    if (!$('speedupView').hidden) renderSpeedup();
 }));
 
 function scalingRows() {
@@ -1377,23 +1393,35 @@ function scalingRows() {
     return { size, t, unit, sizes, rows };
 }
 
-function renderScaling() {
-    const { size, t, unit, sizes, rows } = scalingRows();
+// The Compare view's section shows every algorithm; the Speedup view (only = one algorithm) just that one.
+const COMPARE_SCALING = { title: 'cvScalingTitle', lede: 'cvScalingLede', progress: 'cvScalingProgress',
+    headline: 'scalingHeadline', bars: 'scalingBars', table: 'scalingTable', why: 'scalingWhy', chart: 'scalingChart',
+    minChart: 3 };
+const SPEEDUP_SCALING = { title: 'suTitle', lede: 'suLede', progress: 'suProgress', headline: 'suHeadline',
+    bars: 'suBars', table: 'suTable', why: 'suWhy', chart: 'suChart', minChart: 2 };
+
+function renderScaling(V = COMPARE_SCALING, only = null) {
+    const { size, t, unit, sizes: allSizes, rows: allRows } = scalingRows();
+    const rows = only ? allRows.filter(r => r.algorithm === only) : allRows;
+    const sizes = only ? allSizes.filter(n => rows.some(r => r.byN.has(n))) : allSizes;
     const U = unit === 'pis' ? 'Pis' : 'cores';
-    $('cvScalingTitle').textContent = `Speedup with more ${U}`;
+    $(V.title).textContent = only ? `${ALGORITHMS[only].name}${only === 'alg5' ? `, t = ${t}` : ''}: speedup with more ${U}`
+        : `Speedup with more ${U}`;
     const progress = analysis.running
-        ? `Full analysis running: run ${analysis.done + 1} of ${analysis.plan.length}` +
+        ? `${analysis.kind === 'speedup' ? 'Speedup' : 'Full analysis'} running: run ${analysis.done + 1} of ${analysis.plan.length}` +
           (analysis.current ? ` (${planName(analysis.current.algorithm)} on ${analysis.current.parallel} ` +
               `${unitName(analysis.unit, analysis.current.parallel)})` : '') + '.'
         : '';
-    $('cvScalingProgress').textContent = progress;
-    $('cvScalingProgress').hidden = !progress;
+    $(V.progress).textContent = progress;
+    $(V.progress).hidden = !progress;
 
     if (!rows.length) {
-        $('cvScalingLede').textContent = `No timed runs on the ${size} dataset yet. Press Full analysis to run every ` +
+        $(V.lede).textContent = only ? `No timed runs of ${ALGORITHMS[only].name} on the ${size} dataset yet. ` +
+            `Press Run to run it on 1, 2, … all ${U}.`
+            : `No timed runs on the ${size} dataset yet. Press Full analysis to run every ` +
             `algorithm on 1, 2, … all ${U}, or pick a number in the header and run one.`;
-        ['scalingHeadline', 'scalingBars', 'scalingTable', 'scalingWhy'].forEach(id => { $(id).innerHTML = ''; });
-        $('scalingChart').hidden = true;
+        [V.headline, V.bars, V.table, V.why].forEach(id => { $(id).innerHTML = ''; });
+        $(V.chart).hidden = true;
         return;
     }
     const lo = sizes[0], hi = sizes[sizes.length - 1];
@@ -1405,7 +1433,7 @@ function renderScaling() {
         const work = Math.min(run.work_s ?? run.elapsed_s, run.elapsed_s);
         return { work, coord: run.elapsed_s - work, share: (run.elapsed_s - work) / run.elapsed_s };
     };
-    $('cvScalingLede').textContent = `The same input (${size}) on ${sizes.map(hw).join(', ')}. ` +
+    $(V.lede).textContent = `The same input (${size}) on ${sizes.map(hw).join(', ')}. ` +
         `Wall time is the algorithm itself, from its first Spark job to its answer, without starting Spark.`;
 
     // Headline: what more hardware bought each algorithm, and the MapReduce algorithms against greedy
@@ -1425,11 +1453,11 @@ function renderScaling() {
                 `${fmt(r.rounds)} rounds instead of ${fmt(greedy.rounds)}.</li>`);
         });
     }
-    $('scalingHeadline').innerHTML = lines.length ? `<ul>${lines.join('')}</ul>` : '';
+    $(V.headline).innerHTML = lines.length ? `<ul>${lines.join('')}</ul>` : '';
 
     // Wall-time bars: one bar per algorithm and hardware size, all on the same scale of seconds
     const maxS = Math.max(...rows.flatMap(r => [...r.byN.values()].map(x => x.elapsed_s)));
-    $('scalingBars').innerHTML = `<div class="sb-legend"><span><i class="k-work"></i>work on the machines</span>` +
+    $(V.bars).innerHTML = `<div class="sb-legend"><span><i class="k-work"></i>work on the machines</span>` +
         `<span><i class="k-coord"></i>coordination: scheduling, sending data, the driver's rounds</span></div>` +
         rows.map((r, i) => `
         <div class="sb-group">
@@ -1465,14 +1493,14 @@ function renderScaling() {
         const cov = covs.length === 1 ? fmt(covs[0]) : `<span class="warn">differs: ${covs.map(fmt).join(' / ')}</span>`;
         return `<tr><td>${nameOf(r)}</td>${cells}<td>${fmt(r.rounds)}</td><td>${cov}</td></tr>`;
     }).join('');
-    $('scalingTable').innerHTML = head + `<tbody>${body}</tbody>`;
+    $(V.table).innerHTML = head + `<tbody>${body}</tbody>`;
 
     // Why not linear: the m machines run in waves over the cores, and coordination does not spread out
     const any = rows[0].base;
     const coresOf = n => unit === 'pis' ? n * (any.cores_per_pi || 4) : n;
     const waves = n => Math.ceil(any.machines / coresOf(n));
     const g = greedy && greedy.byN.has(hi) ? split(greedy.byN.get(hi)) : null;
-    $('scalingWhy').innerHTML = any.machines ? `<b>Why not ${hi / lo}×?</b> The input is split into m = ${any.machines} ` +
+    $(V.why).innerHTML = any.machines ? `<b>Why not ${hi / lo}×?</b> The input is split into m = ${any.machines} ` +
         `machines (partitions), the same on any hardware. ${sizes.map(n => (unit === 'pis' ? `${hw(n)} = ${coresOf(n)} cores ` : `${hw(n)} `) +
         `run${unit !== 'pis' && n === 1 ? 's' : ''} them in ${waves(n)} wave${waves(n) === 1 ? '' : 's'}`).join(', ')}, so the work on the machines can get at most ` +
         `${(waves(lo) / waves(hi)).toFixed(1)}× faster. Coordination (scheduling each Spark job, sending the points and ` +
@@ -1481,8 +1509,8 @@ function renderScaling() {
             `${(g.coord / greedy.rounds).toFixed(1)} s per round on ${hw(hi)}, ${Math.round(100 * g.share)}% of its wall time. ` +
             `The more rounds an algorithm needs, the more coordination dominates.` : '') : '';
 
-    $('scalingChart').hidden = sizes.length < 3;
-    if (sizes.length >= 3) drawScalingChart($('scalingChart'), unit, sizes, rows);
+    $(V.chart).hidden = sizes.length < V.minChart;
+    if (sizes.length >= V.minChart) drawScalingChart($(V.chart), unit, sizes, rows);
 }
 
 const fmtS = s => s >= 120 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${s.toFixed(1)} s`;
@@ -1537,6 +1565,53 @@ function drawScalingChart(canvas, unit, sizes, rows) {
 $('compareBtn').addEventListener('click', () => showCompare(true));
 $('cvClose').addEventListener('click', () => showCompare(false));
 $('compareView').addEventListener('click', e => { if (e.target === $('compareView')) showCompare(false); });
+
+// --- Speedup: the algorithm and parameters picked in the header, on 1, 2, ... N Pis (or cores) ---
+// While its own run goes, the view follows that run; otherwise it follows the header.
+const speedupAlgorithm = () => analysis.running && analysis.kind === 'speedup' ? analysis.algorithm : selectedAlgorithm();
+
+async function showSpeedup(on) {
+    $('speedupView').hidden = !on;
+    if (!on) return;
+    await refreshAnalysis();
+    renderSpeedup();
+}
+
+function renderSpeedup() {
+    const U = (analysis.unit || hw.unit) === 'pis' ? 'Pis' : 'cores';
+    const mineRunning = analysis.running && analysis.kind === 'speedup';
+    const btn = $('suRun');
+    btn.textContent = mineRunning ? `Stop (run ${analysis.done + 1} of ${analysis.plan.length})` : `Run on 1, 2, … all ${U}`;
+    btn.disabled = !wsOpen || (analysis.running && !mineRunning) || (!analysis.running && runInProgress());
+    $('suQueue').hidden = !mineRunning;
+    renderScaling(SPEEDUP_SCALING, speedupAlgorithm());
+}
+
+$('speedupBtn').addEventListener('click', () => showSpeedup(true));
+$('suClose').addEventListener('click', () => showSpeedup(false));
+$('speedupView').addEventListener('click', e => { if (e.target === $('speedupView')) showSpeedup(false); });
+document.querySelectorAll('input[name="algorithm"], #tSelect').forEach(el => el.addEventListener('change', () => {
+    if (!$('speedupView').hidden) renderSpeedup();
+}));
+$('suRun').addEventListener('click', async () => {
+    try {
+        if (analysis.running) {
+            await fetch('/analysis/stop', { method: 'POST' });
+        } else {
+            sizeTouched = false;
+            await fetch('/analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ size: document.querySelector('input[name="jobSize"]:checked').value,
+                    t: selectedT(), algorithm: selectedAlgorithm() })
+            });
+        }
+    } catch (e) {
+        console.error('Speedup request failed', e);
+    }
+    await refreshAnalysis();
+    renderSpeedup();
+});
 
 // --- The k-th frequency moment: the same string on 1, 2, ... N Pis (or cores) ---
 // main.py --algorithm kfm sends one KFM_RESULT per run, with its wall time per Spark stage; viz_server
@@ -1721,6 +1796,7 @@ $('themeBtn').addEventListener('click', () => {
     renderThemeButton();
     renderPanels();
     if (!$('kfmView').hidden) renderKfm();
+    if (!$('speedupView').hidden) renderSpeedup();
 });
 renderThemeButton();
 
@@ -1792,6 +1868,8 @@ function connect() {
 }
 
 async function pollCluster() {
+    // /cluster-status asks the Spark master and can be slow while jobs run: don't let it hold up the analysis
+    const analysisPolled = refreshAnalysis();
     try {
         const res = await fetch('/cluster-status');
         const data = await res.json();
@@ -1808,7 +1886,7 @@ async function pollCluster() {
     }
     renderCluster();
     renderHwPicker();
-    await refreshAnalysis();
+    await analysisPolled;
     renderRunButton();
 }
 
