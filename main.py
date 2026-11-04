@@ -9,7 +9,7 @@ ALGORITHMS (--algorithm):
   theorem8  Algorithms 6 and 7 in parallel (arXiv:1810.01489): 1/2 - epsilon approximation in 2 rounds
   alg5      Algorithm 5 with t thresholds (arXiv:1810.01489): 1 - (1 - 1/(t+1))^t approximation in 2t + 2 rounds
   kfm       Algorithm k-FrequencyMoment: the k-th frequency moment of a string, exact, in 2 rounds
-            (a different problem: it runs on a string instead of the circles, and without the UI)
+            (a different problem: it runs on a string of 1M / 10M / 30M symbols instead of the circles)
 
 USAGE (local mode):
     python main.py --size small
@@ -47,7 +47,7 @@ from algorithms.greedy import greedy_with_guesses
 from algorithms.theorem8 import theorem_8_combined
 from algorithms.alg5 import algorithm_5_multi_round
 from algorithms.frequency_moment import k_frequency_moment
-from data import generate_string
+from data import STRING_SIZES, STRING_ALPHABET_SIZE, STRING_CHUNKS, generate_string_pairs, string_counts
 
 # Configure PySpark to use the same Python as the script
 os.environ['PYSPARK_PYTHON'] = sys.executable
@@ -140,30 +140,74 @@ def ship_code_to_workers(sc) -> None:
 # k-th FREQUENCY MOMENT
 # =============================================================================
 
+def stage_timings(sc, job_group: str) -> list:
+    """
+    How long each Spark stage of a job group took and which machines ran its tasks, from the driver's
+    monitoring API. Spark cuts a job into stages at every shuffle, so the algorithm's 2 rounds are
+    3 stages: mu_1 | rho_1 and mu_2 | rho_2. Returns [] when the API can't be reached.
+    """
+    from datetime import datetime
+    if not sc.uiWebUrl:
+        return []
+    tracker = sc.statusTracker()
+    stage_ids = sorted({sid for job in tracker.getJobIdsForGroup(job_group)
+                        for sid in (tracker.getJobInfo(job).stageIds if tracker.getJobInfo(job) else [])})
+    api = f"{sc.uiWebUrl}/api/v1/applications/{sc.applicationId}/stages"
+
+    def get(url):
+        with urllib.request.urlopen(url, timeout=10) as response:
+            return json.loads(response.read())
+
+    def seconds(stamp):
+        return datetime.strptime(stamp.replace("GMT", "+0000"), "%Y-%m-%dT%H:%M:%S.%f%z").timestamp()
+
+    stages = []
+    try:
+        for sid in stage_ids:
+            # the listener can lag a moment behind the job; wait until the stage reads COMPLETE
+            for _ in range(20):
+                attempt = get(f"{api}/{sid}")[-1]
+                if attempt.get("status") in ("COMPLETE", "SKIPPED") and (attempt.get("completionTime") or attempt["status"] == "SKIPPED"):
+                    break
+                time.sleep(0.25)
+            if attempt.get("status") != "COMPLETE":
+                continue
+            hosts = {}
+            for task in get(f"{api}/{sid}/{attempt['attemptId']}/taskList?length=100000"):
+                h = hosts.setdefault(task.get("host", "?"), {"tasks": 0, "ms": 0})
+                h["tasks"] += 1
+                h["ms"] += task.get("duration", 0)
+            stages.append({"stage": sid, "s": round(seconds(attempt["completionTime"]) - seconds(attempt["submissionTime"]), 2),
+                           "tasks": attempt.get("numTasks"), "hosts": hosts})
+    except Exception as e:
+        print(f"  (no stage timings: {e})")
+        return []
+    return stages
+
+
 def run_frequency_moment(args, hardware: dict) -> None:
     """
     Start-up for --algorithm kfm: the input is a string x instead of points and circles, so this
-    only starts Spark, reads or generates x, runs Algorithm k-FrequencyMoment and checks its answer.
+    starts Spark, puts the n pairs <i; x_i> on the machines, runs Algorithm k-FrequencyMoment, checks
+    its answer and (with --ui-url) sends the wall time to the dashboard for its speedup graph.
     """
     if args.input:
         with open(args.input, encoding="utf-8") as f:
             x = f.read()
-        source = args.input
+        n, source = len(x), args.input
     else:
-        x = generate_string(args.size)
-        source = f"random a-z string ({args.size.upper()})"
-    n = len(x)
+        x = None
+        n, source = STRING_SIZES[args.size], f"random string over {STRING_ALPHABET_SIZE} symbols ({args.size.upper()})"
 
     print("=" * 60)
     print("k-th Frequency Moment - kfm")
     print("=" * 60)
     print(f"Mode: {'CLUSTER' if args.cluster else 'LOCAL'}")
-    print(f"Input: {source}, n = {n} symbols, |Sigma| = {len(set(x))}")
+    print(f"Input: {source}, n = {n:,} symbols")
     print(f"k = {args.moment}")
     print("Running on " +
           (f"{hardware['pis']} Pis" if "pis" in hardware else f"{hardware['cores']} cores" if hardware else "all Pis"))
-    if args.ui_url:
-        print("The visualization UI only shows the circle cover algorithms; ignoring --ui-url")
+    ui = UIClient(args.ui_url) if args.ui_url else None
     print("=" * 60)
 
     print("\nInitializing PySpark...")
@@ -173,24 +217,48 @@ def run_frequency_moment(args, hardware: dict) -> None:
     sc.setLogLevel("WARN")
     ship_code_to_workers(sc)
 
-    print(f"\nRunning k-FrequencyMoment on {sc.defaultParallelism} partitions...")
-    print("-" * 60)
+    # The input is on the machines before the algorithm starts: generate (or send) the pairs and keep them in memory
+    print("\nPutting the input pairs <i; x_i> on the machines...")
     started = time.time()
-    f_k = k_frequency_moment(sc, x, args.moment)
+    pairs = generate_string_pairs(sc, n) if x is None else sc.parallelize(list(enumerate(x, start=1)), STRING_CHUNKS)
+    pairs.cache().count()
+    load_s = time.time() - started
+    print(f"  {n:,} pairs in {pairs.getNumPartitions()} partitions, {load_s:.1f} s")
+
+    print("\nRunning k-FrequencyMoment...")
+    print("-" * 60)
+    sc.setJobGroup("kfm", "Algorithm k-FrequencyMoment")
+    started = time.time()
+    f_k = k_frequency_moment(pairs, args.moment)
     elapsed = time.time() - started
+    stages = stage_timings(sc, "kfm")
 
     # check against counting on the driver
-    counts = {}
-    for s in x:
-        counts[s] = counts.get(s, 0) + 1
+    if x is None:
+        counts = string_counts(n)
+    else:
+        counts = {}
+        for s in x:
+            counts[s] = counts.get(s, 0) + 1
     expected = sum(c ** args.moment for c in counts.values())
 
     print("-" * 60)
     print("\nRESULTS:")
     print(f"  f_{args.moment}(x) = {f_k}")
     print(f"  Check (counted on the driver): {expected} -> {'OK' if f_k == expected else 'MISMATCH'}")
-    print(f"  Largest reducer in round 1: {max(counts.values()) if counts else 0} of {n} pairs (the most frequent symbol)")
-    print(f"  Wall time: {elapsed:.1f} s")
+    print(f"  Symbols: |Sigma| = {len(counts)}, largest reducer in round 1: {max(counts.values()) if counts else 0:,} of {n:,} pairs")
+    for name, stage in zip(("mu_1", "rho_1 + mu_2", "rho_2"), stages):
+        print(f"  Stage {name}: {stage['s']:.1f} s, {stage['tasks']} tasks on {len(stage['hosts'])} machine(s)")
+    print(f"  Wall time: {elapsed:.1f} s (plus {load_s:.1f} s to put the input on the machines)")
+
+    if ui:
+        unit = "pis" if "pis" in hardware else "cores" if "cores" in hardware else None
+        ui.send("KFM_RESULT", {"size": "file" if x is not None else args.size, "n": n, "k": args.moment,
+                               "f_k": f_k, "check": f_k == expected, "symbols": len(counts),
+                               "largest_reducer": max(counts.values()) if counts else 0,
+                               "unit": unit, "parallel": hardware.get(unit) if unit else None,
+                               "cores_per_pi": hardware.get("cores_per_pi"), "partitions": pairs.getNumPartitions(),
+                               "elapsed_s": round(elapsed, 2), "load_s": round(load_s, 2), "stages": stages})
 
     spark.stop()
     print("\nDone!")
@@ -213,7 +281,7 @@ def main():
     parser.add_argument("--t", type=int, default=2, help="number of thresholds for Algorithm 5")
     parser.add_argument("--moment", type=int, default=2, help="kfm: which frequency moment k to compute")
     parser.add_argument("--input", type=str, help="kfm: text file whose characters are the string x "
-                                                  "(default: a random a-z string with as many symbols as the size has points)")
+                                                  "(default: a random string of 1M, 10M or 30M symbols for small, medium, large)")
     parser.add_argument("--pis", type=int, help="cluster mode: number of Pis to run on (default: all alive workers)")
     parser.add_argument("--cores", type=int, help="local mode: number of cores to run on (default: all)")
     args = parser.parse_args()

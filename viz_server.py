@@ -32,6 +32,8 @@ class ConnectionManager:
         self.runs: dict = {}
         # wall time and coverage of the latest finished run per input, algorithm and hardware size
         self.scaling: dict = {}
+        # the k-th frequency moment's latest run per input size, k and hardware size (KFM_RESULT events)
+        self.kfm: dict = {}
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -50,6 +52,11 @@ class ConnectionManager:
                 # Optional: self.disconnect(connection) if not already handled
             
     def record_event(self, data: dict):
+        if data.get('type') == 'KFM_RESULT':
+            # a different problem than the circle runs: kept apart, so it never lands in their timeline
+            key = "|".join(str(data.get(k)) for k in ("size", "k", "unit", "parallel"))
+            self.kfm[key] = data
+            return
         if data.get('type') == 'INIT':
             self.recorded_events = []
             algorithm = (data.get('config') or {}).get('algorithm', 'greedy')
@@ -144,22 +151,24 @@ async def update_event(request: Request):
     
     return {"status": "ok"}
 
-ALGORITHMS = ("greedy", "theorem8", "alg5")
+ALGORITHMS = ("greedy", "theorem8", "alg5")   # the circle cover algorithms; "kfm" has its own analysis
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Detect if we're on Pi cluster or local Windows/Mac
 IS_PI_CLUSTER = os.path.exists("/home/pi/spark-env/bin/python")
 
 
-def build_command(algorithm: str, job_size: str, t: int, parallel: Optional[int]) -> List[str]:
+def build_command(algorithm: str, job_size: str, t: int, parallel: Optional[int], moment: int = 2) -> List[str]:
     """
     main.py runs every algorithm: greedy (threshold greedy, many rounds), theorem8 (Algorithms 6 + 7,
-    two rounds) or alg5 (Algorithm 5, 2t + 2 rounds). parallel is the number of Pis (cluster) or
-    cores (local) to run on; None uses all of them.
+    two rounds), alg5 (Algorithm 5, 2t + 2 rounds) or kfm (the k-th frequency moment, k = moment).
+    parallel is the number of Pis (cluster) or cores (local) to run on; None uses all of them.
     """
     main_py_path = os.path.join(SCRIPT_DIR, "main.py")
     extra_args = ["--algorithm", algorithm]
     if algorithm == "alg5":
         extra_args += ["--t", str(t)]
+    if algorithm == "kfm":
+        extra_args += ["--moment", str(moment)]
     if IS_PI_CLUSTER:
         # Pi cluster: use virtual env python and cluster mode
         cmd = ["/home/pi/spark-env/bin/python", main_py_path, "--cluster"]
@@ -173,8 +182,8 @@ def build_command(algorithm: str, job_size: str, t: int, parallel: Optional[int]
     return cmd + ["--ui-url", "http://127.0.0.1:8000", "--size", job_size] + extra_args
 
 
-def start_job(algorithm: str, job_size: str, t: int, parallel: Optional[int]) -> subprocess.Popen:
-    cmd = build_command(algorithm, job_size, t, parallel)
+def start_job(algorithm: str, job_size: str, t: int, parallel: Optional[int], moment: int = 2) -> subprocess.Popen:
+    cmd = build_command(algorithm, job_size, t, parallel, moment)
     logger.info(f"Command: {' '.join(cmd)}")
     # Run as subprocess. Output goes to a log file: an unread PIPE fills up and stalls the job.
     log_path = os.path.join(SCRIPT_DIR, f"last_run_{algorithm}.log")
@@ -252,15 +261,17 @@ def parallel_ladder() -> List[int]:
     return ladder + ([cores] if cores > 1 else [])
 
 
-analysis = {"running": False, "size": None, "t": 2, "plan": [], "done": 0, "current": None, "unit": None}
+# kind is "circles" (every circle cover algorithm) or "kfm" (only the k-th frequency moment, with k = moment)
+analysis = {"running": False, "kind": "circles", "size": None, "t": 2, "moment": 2, "plan": [], "done": 0,
+            "current": None, "unit": None}
 analysis_job: dict = {"task": None, "process": None}
 
 
-async def run_analysis(job_size: str, t: int, plan: List[Tuple[str, int]]):
+async def run_analysis(job_size: str, t: int, plan: List[Tuple[str, int]], moment: int = 2):
     try:
         for algorithm, parallel in plan:
             analysis["current"] = {"algorithm": algorithm, "parallel": parallel, "started_at": time.time()}
-            process = start_job(algorithm, job_size, t, parallel)
+            process = start_job(algorithm, job_size, t, parallel, moment)
             analysis_job["process"] = process
             while process.poll() is None:
                 await asyncio.sleep(1)
@@ -282,9 +293,30 @@ async def start_analysis(request: Request):
         body = {}
     job_size, _, t = parse_run_request(body)
     plan = [(a, n) for a in ALGORITHMS for n in parallel_ladder()]
-    analysis.update(running=True, size=job_size, t=t, plan=plan, done=0, current=None,
+    analysis.update(running=True, kind="circles", size=job_size, t=t, plan=plan, done=0, current=None,
                     unit="pis" if IS_PI_CLUSTER else "cores")
     analysis_job["task"] = asyncio.create_task(run_analysis(job_size, t, plan))
+    return {"status": "started", **analysis}
+
+
+@app.post("/kfm/analysis")
+async def start_kfm_analysis(request: Request):
+    """Run the k-th frequency moment on 1, 2, ... N Pis (or cores), one run after another, for its speedup graph."""
+    if analysis["running"]:
+        return {"status": "busy", **analysis}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    job_size, _, _ = parse_run_request(body)
+    try:
+        moment = max(1, min(10, int(body.get('k', 2))))
+    except Exception:
+        moment = 2
+    plan = [("kfm", n) for n in parallel_ladder()]
+    analysis.update(running=True, kind="kfm", size=job_size, moment=moment, plan=plan, done=0, current=None,
+                    unit="pis" if IS_PI_CLUSTER else "cores")
+    analysis_job["task"] = asyncio.create_task(run_analysis(job_size, 2, plan, moment))
     return {"status": "started", **analysis}
 
 
@@ -302,7 +334,8 @@ async def stop_analysis():
 @app.get("/analysis")
 async def get_analysis():
     """Progress of the full analysis, and the wall time of every finished run per hardware size."""
-    return {**analysis, "now": time.time(), "results": list(manager.scaling.values())}
+    return {**analysis, "now": time.time(), "results": list(manager.scaling.values()),
+            "kfm_results": list(manager.kfm.values())}
 
 
 @app.get("/cluster-status")

@@ -10,8 +10,8 @@ The input to the MapReduce model is a set of <key; value> pairs, so we think of 
 where the i-th pair corresponds to the symbol x_i and is represented as <i; x_i>.
 """
 
-from typing import Iterable, Optional, Tuple
-from pyspark import SparkContext
+from typing import Iterable, Tuple
+from pyspark import RDD
 
 # The special symbol $: the key every pair gets in the second round
 DOLLAR = "$"
@@ -77,19 +77,16 @@ def reducer_2(pair: Tuple[str, Iterable[int]]) -> Tuple[str, int]:
 # ALGORITHM k-FREQUENCYMOMENT
 # =============================================================================
 
-def k_frequency_moment(sc: SparkContext, x: str, k: int, num_partitions: Optional[int] = None) -> int:
+def k_frequency_moment(pairs: RDD, k: int) -> int:
     """
     Algorithm k-FrequencyMoment
-    Input: a string x of length n where the i-th symbol in this string is denoted by x_i.
+    Input: a string x of length n where the i-th symbol in this string is denoted by x_i,
+    given as the n pairs <i; x_i> (an RDD spread over the machines).
     Output: the k-th frequency moment of x, f_k(x) = sum over symbols s in Sigma of |{i in [n]: x_i = s}|^k.
 
     Each round is a map followed by a shuffle that sends all pairs with the same key to one reducer
     (groupByKey), so the reducer gets the whole list of values, as in the algorithm.
-    num_partitions is how many pieces the input pairs are split into (default: Spark's default parallelism).
     """
-    # the input: n pairs <i; x_i>, one per symbol of x (positions i = 1..n)
-    pairs = sc.parallelize(list(enumerate(x, start=1)), num_partitions)
-
     # Round 1: mu_1 then rho_1, one reducer per symbol of the alphabet
     round_1 = pairs.map(mapper_1) \
         .groupByKey() \

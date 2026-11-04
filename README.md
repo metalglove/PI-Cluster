@@ -6,7 +6,7 @@ Distributed algorithms for the circle cover problem, written with Apache Spark a
 
 - **`greedy`** (default): sequential greedy thresholding with a **1/2(1-ε) approximation guarantee**. Each greedy step is parallelized over Spark, so a run needs many rounds.
 - **`theorem8`** and **`alg5`**: the MapReduce algorithms from Liu & Vondrák, [*Submodular Optimization in the MapReduce Model*](https://arxiv.org/abs/1810.01489) (SOSA 2019), which need only a constant number of rounds.
-- **`kfm`**: a separate, smaller example of the MapReduce model: Algorithm k-FrequencyMoment computes the k-th frequency moment of a string in 2 rounds (no dashboard).
+- **`kfm`**: a separate, smaller example of the MapReduce model: Algorithm k-FrequencyMoment computes the k-th frequency moment of a string in 2 rounds. The dashboard's *Frequency moment* view runs it on 1, 2, … all Pis and graphs the speedup.
 
 ![Threshold greedy running on two Raspberry Pis, in dark mode](docs/cluster-greedy.png)
 
@@ -56,6 +56,10 @@ A different problem, as a small example of the MapReduce model: the k-th frequen
 
 The answer is exact; the run also prints the count done on the driver as a check. One reducer gets every position of a symbol, so a string made of one repeated symbol sends all n pairs to a single machine (the run prints the largest round-1 reducer).
 
+Each symbol is little work, so the generated strings are long (1M, 10M or 30M symbols over 1,000 symbols) and are generated on the machines themselves, in 120 fixed chunks, so the string and f_k are the same on any number of Pis. The pairs are put in memory on the machines before the timer starts. The *Frequency moment* button in the dashboard runs the algorithm on 1, 2, … all Pis and shows the wall time per Spark stage (μ₁ | ρ₁ and μ₂ | ρ₂), the speedup against the ideal, and which machines ran the tasks.
+
+![The Frequency moment view after runs on 1, 2 and 4 cores](docs/kfm-speedup.png)
+
 ## The dashboard
 
 ![Algorithm 5 on the medium dataset: the chosen circles, the marginal gain of each pick and the pseudocode](docs/dashboard.png)
@@ -104,7 +108,7 @@ python main.py --algorithm theorem8 --size small
 # The paper's Algorithm 5 with t thresholds (2t + 2 rounds), on 2 cores
 python main.py --algorithm alg5 --t 3 --size small --cores 2
 
-# The k-th frequency moment of a string (k = 3), on a random a-z string or on a text file
+# The k-th frequency moment of a string (k = 3), on a random string of 1M symbols or on a text file
 python main.py --algorithm kfm --moment 3 --size small
 python main.py --algorithm kfm --moment 2 --input some_text.txt
 
@@ -137,7 +141,7 @@ With `--pis N`, the job asks the master for N × 4 cores in 4-core executors, so
 | `--size` | `small` (2K points, 500 circles), `medium` (25K, 2,000), `large` (100K, 5,000) | `small` |
 | `--t` | number of thresholds for Algorithm 5 | `2` |
 | `--moment` | `kfm`: which frequency moment k to compute | `2` |
-| `--input` | `kfm`: text file whose characters are the string x | random a-z string, n = points of `--size` |
+| `--input` | `kfm`: text file whose characters are the string x | random string over 1,000 symbols, n = 1M / 10M / 30M for `--size` small / medium / large |
 | `--cluster` | flag: run on the Pi cluster instead of locally | off |
 | `--pis` | cluster mode: number of Pis to run on | all alive workers |
 | `--cores` | local mode: number of cores to run on | all |
