@@ -261,8 +261,9 @@ def parallel_ladder() -> List[int]:
     return ladder + ([cores] if cores > 1 else [])
 
 
-# kind is "circles" (every circle cover algorithm) or "kfm" (only the k-th frequency moment, with k = moment)
-analysis = {"running": False, "kind": "circles", "size": None, "t": 2, "moment": 2, "plan": [], "done": 0,
+# kind is "circles" (every circle cover algorithm), "speedup" (one of them, in algorithm) or "kfm"
+# (only the k-th frequency moment, with k = moment)
+analysis = {"running": False, "kind": "circles", "algorithm": None, "size": None, "t": 2, "moment": 2, "plan": [], "done": 0,
             "current": None, "unit": None}
 analysis_job: dict = {"task": None, "process": None}
 
@@ -292,9 +293,11 @@ async def start_analysis(request: Request):
     except Exception:
         body = {}
     job_size, _, t = parse_run_request(body)
-    plan = [(a, n) for a in ALGORITHMS for n in parallel_ladder()]
-    analysis.update(running=True, kind="circles", size=job_size, t=t, plan=plan, done=0, current=None,
-                    unit="pis" if IS_PI_CLUSTER else "cores")
+    # With "algorithm", only that one (the Speedup view); otherwise every algorithm (Full analysis)
+    only = body.get("algorithm") if body.get("algorithm") in ALGORITHMS else None
+    plan = [(a, n) for a in ([only] if only else ALGORITHMS) for n in parallel_ladder()]
+    analysis.update(running=True, kind="speedup" if only else "circles", algorithm=only, size=job_size, t=t,
+                    plan=plan, done=0, current=None, unit="pis" if IS_PI_CLUSTER else "cores")
     analysis_job["task"] = asyncio.create_task(run_analysis(job_size, t, plan))
     return {"status": "started", **analysis}
 
