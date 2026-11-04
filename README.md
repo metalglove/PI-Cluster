@@ -6,6 +6,7 @@ Distributed algorithms for the circle cover problem, written with Apache Spark a
 
 - **`greedy`** (default): sequential greedy thresholding with a **1/2(1-ε) approximation guarantee**. Each greedy step is parallelized over Spark, so a run needs many rounds.
 - **`theorem8`** and **`alg5`**: the MapReduce algorithms from Liu & Vondrák, [*Submodular Optimization in the MapReduce Model*](https://arxiv.org/abs/1810.01489) (SOSA 2019), which need only a constant number of rounds.
+- **`kfm`**: a separate, smaller example of the MapReduce model: Algorithm k-FrequencyMoment computes the k-th frequency moment of a string in 2 rounds (no dashboard).
 
 ![Threshold greedy running on two Raspberry Pis, in dark mode](docs/cluster-greedy.png)
 
@@ -45,6 +46,15 @@ All of them build on Algorithm 1 (ThresholdGreedy), Algorithm 2 (ThresholdFilter
 | 1 | 4 | 0.500 |
 | 2 | 6 | 0.556 |
 | 3 | 8 | 0.578 |
+
+### k-th frequency moment (`algorithms/frequency_moment.py`)
+
+A different problem, as a small example of the MapReduce model: the k-th frequency moment of a string x of length n is f_k(x) = Σ over symbols s of |{i ∈ [n] : x_i = s}|^k. The input is n pairs ⟨i; x_i⟩, and Algorithm k-FrequencyMoment takes 2 rounds:
+
+1. **μ₁** turns ⟨i; x_i⟩ into ⟨x_i; i⟩. **ρ₁** gets one symbol with the list of its positions ⟨x_i; {v₁, …, v_m}⟩ and emits ⟨x_i; m^k⟩.
+2. **μ₂** turns ⟨x_i; v⟩ into ⟨$; v⟩. **ρ₂** gets all of them under the special key $ and emits their sum, f_k(x).
+
+The answer is exact; the run also prints the count done on the driver as a check. One reducer gets every position of a symbol, so a string made of one repeated symbol sends all n pairs to a single machine (the run prints the largest round-1 reducer).
 
 ## The dashboard
 
@@ -94,6 +104,10 @@ python main.py --algorithm theorem8 --size small
 # The paper's Algorithm 5 with t thresholds (2t + 2 rounds), on 2 cores
 python main.py --algorithm alg5 --t 3 --size small --cores 2
 
+# The k-th frequency moment of a string (k = 3), on a random a-z string or on a text file
+python main.py --algorithm kfm --moment 3 --size small
+python main.py --algorithm kfm --moment 2 --input some_text.txt
+
 # With the dashboard (in separate terminals)
 python viz_server.py                                          # Terminal 1, then open http://localhost:8000
 python main.py --ui-url http://localhost:8000 --size medium   # Terminal 2
@@ -119,9 +133,11 @@ With `--pis N`, the job asks the master for N × 4 cores in 4-core executors, so
 
 | Option | Values | Default |
 |--------|--------|---------|
-| `--algorithm` | `greedy`, `theorem8`, `alg5` | `greedy` |
+| `--algorithm` | `greedy`, `theorem8`, `alg5`, `kfm` | `greedy` |
 | `--size` | `small` (2K points, 500 circles), `medium` (25K, 2,000), `large` (100K, 5,000) | `small` |
 | `--t` | number of thresholds for Algorithm 5 | `2` |
+| `--moment` | `kfm`: which frequency moment k to compute | `2` |
+| `--input` | `kfm`: text file whose characters are the string x | random a-z string, n = points of `--size` |
 | `--cluster` | flag: run on the Pi cluster instead of locally | off |
 | `--pis` | cluster mode: number of Pis to run on | all alive workers |
 | `--cores` | local mode: number of cores to run on | all |
@@ -232,7 +248,8 @@ PI-Cluster/
 │   ├── alg5.py          # Algorithm 5 (t thresholds, 2t + 2 rounds)
 │   ├── alg6.py          # Algorithm 6 (dense inputs, 2 rounds)
 │   ├── alg7.py          # Algorithm 7 (sparse inputs, 2 rounds)
-│   └── theorem8.py      # Theorem 8 (Algorithms 6 + 7)
+│   ├── theorem8.py      # Theorem 8 (Algorithms 6 + 7)
+│   └── frequency_moment.py  # Algorithm k-FrequencyMoment (2 rounds)
 ├── viz_client.py        # Sends events to the dashboard server
 ├── viz_server.py        # Dashboard server (FastAPI): live events, runs, full analysis
 ├── ui/                  # Dashboard (index.html, style.css, script.js)

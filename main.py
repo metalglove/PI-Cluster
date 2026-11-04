@@ -8,11 +8,15 @@ ALGORITHMS (--algorithm):
   greedy    sequential threshold greedy: 1/2(1-ε) approximation, one Spark job per greedy step (default)
   theorem8  Algorithms 6 and 7 in parallel (arXiv:1810.01489): 1/2 - epsilon approximation in 2 rounds
   alg5      Algorithm 5 with t thresholds (arXiv:1810.01489): 1 - (1 - 1/(t+1))^t approximation in 2t + 2 rounds
+  kfm       Algorithm k-FrequencyMoment: the k-th frequency moment of a string, exact, in 2 rounds
+            (a different problem: it runs on a string instead of the circles, and without the UI)
 
 USAGE (local mode):
     python main.py --size small
     python main.py --algorithm theorem8 --size small
     python main.py --algorithm alg5 --t 3 --size small
+    python main.py --algorithm kfm --moment 2 --size small
+    python main.py --algorithm kfm --moment 3 --input some_text.txt
 
 USAGE (cluster mode):
     python main.py --cluster --algorithm theorem8 --size medium
@@ -42,6 +46,8 @@ from viz_client import UIClient
 from algorithms.greedy import greedy_with_guesses
 from algorithms.theorem8 import theorem_8_combined
 from algorithms.alg5 import algorithm_5_multi_round
+from algorithms.frequency_moment import k_frequency_moment
+from data import generate_string
 
 # Configure PySpark to use the same Python as the script
 os.environ['PYSPARK_PYTHON'] = sys.executable
@@ -131,6 +137,66 @@ def ship_code_to_workers(sc) -> None:
 
 
 # =============================================================================
+# k-th FREQUENCY MOMENT
+# =============================================================================
+
+def run_frequency_moment(args, hardware: dict) -> None:
+    """
+    Start-up for --algorithm kfm: the input is a string x instead of points and circles, so this
+    only starts Spark, reads or generates x, runs Algorithm k-FrequencyMoment and checks its answer.
+    """
+    if args.input:
+        with open(args.input, encoding="utf-8") as f:
+            x = f.read()
+        source = args.input
+    else:
+        x = generate_string(args.size)
+        source = f"random a-z string ({args.size.upper()})"
+    n = len(x)
+
+    print("=" * 60)
+    print("k-th Frequency Moment - kfm")
+    print("=" * 60)
+    print(f"Mode: {'CLUSTER' if args.cluster else 'LOCAL'}")
+    print(f"Input: {source}, n = {n} symbols, |Sigma| = {len(set(x))}")
+    print(f"k = {args.moment}")
+    print("Running on " +
+          (f"{hardware['pis']} Pis" if "pis" in hardware else f"{hardware['cores']} cores" if hardware else "all Pis"))
+    if args.ui_url:
+        print("The visualization UI only shows the circle cover algorithms; ignoring --ui-url")
+    print("=" * 60)
+
+    print("\nInitializing PySpark...")
+    spark = create_spark_session("FrequencyMoment", cluster_mode=args.cluster,
+                                 pis=hardware.get("pis"), cores=hardware.get("cores"))
+    sc = spark.sparkContext
+    sc.setLogLevel("WARN")
+    ship_code_to_workers(sc)
+
+    print(f"\nRunning k-FrequencyMoment on {sc.defaultParallelism} partitions...")
+    print("-" * 60)
+    started = time.time()
+    f_k = k_frequency_moment(sc, x, args.moment)
+    elapsed = time.time() - started
+
+    # check against counting on the driver
+    counts = {}
+    for s in x:
+        counts[s] = counts.get(s, 0) + 1
+    expected = sum(c ** args.moment for c in counts.values())
+
+    print("-" * 60)
+    print("\nRESULTS:")
+    print(f"  f_{args.moment}(x) = {f_k}")
+    print(f"  Check (counted on the driver): {expected} -> {'OK' if f_k == expected else 'MISMATCH'}")
+    print(f"  Largest reducer in round 1: {max(counts.values()) if counts else 0} of {n} pairs (the most frequent symbol)")
+    print(f"  Wall time: {elapsed:.1f} s")
+
+    spark.stop()
+    print("\nDone!")
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -141,9 +207,13 @@ def main():
     parser.add_argument("--ui-url", type=str, help="URL of the visualization server (e.g., http://localhost:8000)")
     parser.add_argument("--size", type=str, default="small", choices=["small", "medium", "large"],
                         help="Dataset size: small (2K), medium (25K), or large (100K)")
-    parser.add_argument("--algorithm", type=str, choices=["greedy", "theorem8", "alg5"], default="greedy",
-                        help="greedy (threshold greedy), theorem8 (Algorithms 6 + 7) or alg5 (Algorithm 5)")
+    parser.add_argument("--algorithm", type=str, choices=["greedy", "theorem8", "alg5", "kfm"], default="greedy",
+                        help="greedy (threshold greedy), theorem8 (Algorithms 6 + 7), alg5 (Algorithm 5) "
+                             "or kfm (k-th frequency moment of a string)")
     parser.add_argument("--t", type=int, default=2, help="number of thresholds for Algorithm 5")
+    parser.add_argument("--moment", type=int, default=2, help="kfm: which frequency moment k to compute")
+    parser.add_argument("--input", type=str, help="kfm: text file whose characters are the string x "
+                                                  "(default: a random a-z string with as many symbols as the size has points)")
     parser.add_argument("--pis", type=int, help="cluster mode: number of Pis to run on (default: all alive workers)")
     parser.add_argument("--cores", type=int, help="local mode: number of cores to run on (default: all)")
     args = parser.parse_args()
@@ -160,6 +230,10 @@ def main():
         hardware = {"pis": pis, "cores_per_pi": CORES_PER_PI} if pis else {}
     else:
         hardware = {"cores": args.cores or multiprocessing.cpu_count()}
+
+    if args.algorithm == "kfm":
+        run_frequency_moment(args, hardware)
+        return
 
     print("=" * 60)
     print(f"Circle Cover Problem - {args.algorithm}")

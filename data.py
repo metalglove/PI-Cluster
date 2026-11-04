@@ -1,6 +1,7 @@
 """
 Input data for the circle cover problem: points to cover, and candidate circles to cover them with.
 Every algorithm runs on the same data for a given size, so their results can be compared directly.
+Also the input string for the k-th frequency moment (--algorithm kfm), see generate_string.
 """
 
 import random
@@ -124,3 +125,20 @@ def generate_dataset(size: str) -> Tuple[List[Point], List[Circle]]:
                                        cluster_std=CLUSTER_STD, seed=SEED)
     circles = generate_circles(config["N_CIRCLES"], BOUNDS, RADIUS_RANGE, seed=SEED + 1)
     return points, circles
+
+
+# =============================================================================
+# INPUT STRING FOR THE k-th FREQUENCY MOMENT
+# =============================================================================
+
+STRING_ALPHABET = "abcdefghijklmnopqrstuvwxyz"
+
+
+def generate_string(size: str) -> str:
+    """
+    A random string x for the k-th frequency moment, with as many symbols as the size has points
+    (n = 2K, 25K or 100K), each drawn uniformly from the alphabet a-z.
+    """
+    n = SIZE_CONFIGS[size]["N_POINTS"]
+    rng = random.Random(SEED)
+    return "".join(rng.choice(STRING_ALPHABET) for _ in range(n))
