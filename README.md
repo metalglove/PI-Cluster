@@ -84,6 +84,8 @@ Each symbol is little work, so the generated strings are long (1M, 10M or 30M sy
 
   The paper's m machines are Spark partitions, with m = ⌈√(n/k)⌉ (8 for small, 15 for medium, 23 for large). m depends only on the input, not on the hardware, so adding Pis runs the same partitions side by side instead of one after another. The union of the machines' filtered circles is put back in machine order before the central greedy, so it does not depend on which Pi finishes first either. The threshold greedy barely speeds up: it needs one Spark job per pick (~130 rounds on medium), and each round pays a fixed coordination cost (scheduling the job, sending the current solution, collecting the answer) that more Pis do not shrink. The work part of each bar is the slowest machine per round, summed over the rounds; the rest of the wall time is coordination. That is the point the 2-round algorithms make.
 
+- **Speedup** (S). Runs the algorithm and parameters picked in the header on 1, 2, … all Pis, one run after another, and shows that algorithm's wall time per number of Pis, its speedup against the ideal and why it is not linear, in a view of its own. It uses the same queue and locked controls as a full analysis; *Stop* in the view ends it.
+
 - **Present mode** (P) for a projector, chapters ([ ] or PageUp/PageDown for clickers), and a light and dark theme.
 
 ## Quick start
@@ -205,13 +207,14 @@ ssh pi@raspberrypi "tail -50 ~/spark/logs/spark-pi-org.apache.spark.deploy.maste
 ### Deploy
 
 ```bash
-bash deploy.sh      # from Git Bash on Windows, or Linux/macOS
-.\deploy.ps1        # or from PowerShell
+bash deploy.sh                    # from Git Bash on Windows, or Linux/macOS
+MASTER=pi1.local bash deploy.sh   # to another master than raspberrypi
+.\deploy.ps1                      # or from PowerShell (raspberrypi only)
 ```
 
-The deploy scripts copy `main.py`, `data.py`, `oracle.py`, `viz_client.py`, `algorithms/`, `viz_server.py` and the dashboard to the master, then restart the dashboard server. Only the master needs the code: `main.py` zips its modules and ships them to the workers at start-up.
+The deploy scripts copy `main.py`, `data.py`, `oracle.py`, `viz_client.py`, `algorithms/`, `viz_server.py` and the dashboard to the master, then restart the dashboard server (`deploy.sh` restarts the `viz-server` systemd unit when the master has one). Only the master needs the code: `main.py` zips its modules and ships them to the workers at start-up.
 
-Then open `http://raspberrypi:8000`, pick an algorithm, a dataset size and the number of Pis, and press *Run on cluster*, or press *Full analysis*.
+Then open `http://raspberrypi:8000`, pick an algorithm, a dataset size and the number of Pis, and press *Run on cluster*, *Speedup* or *Full analysis*.
 
 ---
 
@@ -222,8 +225,9 @@ Then open `http://raspberrypi:8000`, pick an algorithm, a dataset size and the n
 ```python
 K = 10              # Maximum circles to select
 EPSILON = 0.2       # Approximation parameter (affects # of guesses)
-SPARK_MASTER_URL = "spark://192.168.1.223:7077"
-SPARK_MASTER_UI = "http://192.168.1.223:8080/json/"
+SPARK_MASTER_HOST = os.environ.get("SPARK_MASTER_HOST", "192.168.1.223")
+SPARK_MASTER_URL = f"spark://{SPARK_MASTER_HOST}:7077"
+SPARK_MASTER_UI = f"http://{SPARK_MASTER_HOST}:8080/json/"
 CORES_PER_PI = 4
 ```
 
@@ -235,7 +239,7 @@ BOUNDS = (0, 0, 1000, 1000)     # Spatial bounds
 RADIUS_RANGE = (30, 100)        # Circle radius range
 ```
 
-To run on another cluster, change the master IP in `main.py`, the host in `deploy.sh`/`deploy.ps1`, and the venv path in `viz_server.py`. See [CLUSTER_SETUP.md](CLUSTER_SETUP.md) for setting up the Pis.
+To run on another cluster, set `SPARK_MASTER_HOST` to the master's IP for `main.py` and `viz_server.py` (for the dashboard, in its systemd unit: `Environment=SPARK_MASTER_HOST=192.168.50.11`; the master UI listens on that IP when `spark-env.sh` sets `SPARK_LOCAL_IP`), deploy with `MASTER=<host> bash deploy.sh`, and check the venv path in `viz_server.py`. See [CLUSTER_SETUP.md](CLUSTER_SETUP.md) for setting up the Pis.
 
 ---
 
@@ -255,7 +259,7 @@ PI-Cluster/
 │   ├── theorem8.py      # Theorem 8 (Algorithms 6 + 7)
 │   └── frequency_moment.py  # Algorithm k-FrequencyMoment (2 rounds)
 ├── viz_client.py        # Sends events to the dashboard server
-├── viz_server.py        # Dashboard server (FastAPI): live events, runs, full analysis
+├── viz_server.py        # Dashboard server (FastAPI): live events, runs, speedup and full analysis
 ├── ui/                  # Dashboard (index.html, style.css, script.js)
 ├── docs/                # Screenshots
 ├── deploy.sh, deploy.ps1   # Copy everything to the master and restart the dashboard
