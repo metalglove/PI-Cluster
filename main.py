@@ -25,6 +25,7 @@ USAGE (with the visualization server):
     python main.py --ui-url http://localhost:8000 --size medium
 
 SIZE OPTIONS: small (2K points, 500 circles), medium (25K, 2000), large (100K, 5000)
+              for kfm: a string of 1M, 10M or 30M symbols
 """
 
 import argparse
@@ -171,6 +172,8 @@ def stage_timings(sc, job_group: str) -> list:
                     break
                 time.sleep(0.25)
             if attempt.get("status") != "COMPLETE":
+                # keep its place, so the stages stay in order (mu_1, rho_1 + mu_2, rho_2)
+                stages.append({"stage": sid, "s": 0, "tasks": attempt.get("numTasks"), "hosts": {}})
                 continue
             hosts = {}
             for task in get(f"{api}/{sid}/{attempt['attemptId']}/taskList?length=100000"):
@@ -195,6 +198,10 @@ def run_frequency_moment(args, hardware: dict) -> None:
         with open(args.input, encoding="utf-8") as f:
             x = f.read()
         n, source = len(x), args.input
+        if n == 0:
+            # no pairs, so no reducer ever emits: f_k of the empty string is the empty sum, 0
+            print(f"{args.input} is empty: f_{args.moment}(x) = 0")
+            return
     else:
         x = None
         n, source = STRING_SIZES[args.size], f"random string over {STRING_ALPHABET_SIZE} symbols ({args.size.upper()})"
@@ -220,7 +227,7 @@ def run_frequency_moment(args, hardware: dict) -> None:
     # The input is on the machines before the algorithm starts: generate (or send) the pairs and keep them in memory
     print("\nPutting the input pairs <i; x_i> on the machines...")
     started = time.time()
-    pairs = generate_string_pairs(sc, n) if x is None else sc.parallelize(list(enumerate(x, start=1)), STRING_CHUNKS)
+    pairs = generate_string_pairs(sc, n) if x is None else sc.parallelize(list(enumerate(x, start=1)), max(1, min(n, STRING_CHUNKS)))
     pairs.cache().count()
     load_s = time.time() - started
     print(f"  {n:,} pairs in {pairs.getNumPartitions()} partitions, {load_s:.1f} s")

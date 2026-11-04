@@ -1558,11 +1558,11 @@ const KFM_CODE = [
 $('kfmCode').innerHTML = KFM_CODE.map(l => l.head ? `<li class="head">${l.head}</li>`
     : l.note ? `<li class="note i1">${l.note}</li>` : `<li>${l.text}</li>`).join('');
 
-let kfmSizeTouched = false;   // after the user picks n, show that one instead of the running analysis'
+let kfmTouched = false;   // after the user picks n or k, show those instead of the last frequency moment analysis'
 const kfmSelectedSize = () => document.querySelector('input[name="kfmSize"]:checked').value;
-const kfmSize = () => analysis.kind === 'kfm' && analysis.size && (analysis.running || !kfmSizeTouched)
-    ? analysis.size : kfmSelectedSize();
-const kfmK = () => analysis.kind === 'kfm' && analysis.running ? analysis.moment : Number($('kfmK').value);
+const kfmFollowsAnalysis = () => analysis.kind === 'kfm' && analysis.size && (analysis.running || !kfmTouched);
+const kfmSize = () => kfmFollowsAnalysis() ? analysis.size : kfmSelectedSize();
+const kfmK = () => kfmFollowsAnalysis() ? analysis.moment : Number($('kfmK').value);
 const kfmRunOf = (size, k, unit, n) => (analysis.kfm_results || []).find(r =>
     r.size === size && r.k === k && r.unit === unit && r.parallel === n);
 
@@ -1591,7 +1591,8 @@ function renderKfm() {
         : `Run on 1, 2, … all ${U}`;
     btn.disabled = !wsOpen || (analysis.running && !mineRunning) || (!analysis.running && runInProgress());
     document.querySelectorAll('input[name="kfmSize"], #kfmK').forEach(el => { el.disabled = mineRunning; });
-    if (mineRunning) {
+    if (kfmFollowsAnalysis()) {
+        // the pickers show what the results below were run with
         document.querySelector(`input[name="kfmSize"][value="${analysis.size}"]`).checked = true;
         $('kfmK').value = String(analysis.moment);
     }
@@ -1670,9 +1671,10 @@ function renderKfm() {
         }).join('') + '</tbody>';
 
     const cores = n => unit === 'pis' ? n * (base.cores_per_pi || 4) : n;
-    $('kfmWhy').innerHTML = `<b>Why it speeds up.</b> The ${fmt(base.n)} pairs are split into ${base.partitions} partitions, ` +
-        `and μ₁ and ρ₁ work on them independently: ${runs.map(r => `${hwText(r.parallel)} run ` +
-        `${Math.ceil(base.partitions / cores(r.parallel))} partition${Math.ceil(base.partitions / cores(r.parallel)) === 1 ? '' : 's'} per core`).join(', ')}. ` +
+    const perCore = n => Math.ceil(base.partitions / cores(n));
+    $('kfmWhy').innerHTML = `<b>Why it speeds up.</b> μ₁ works on the ${fmt(base.n)} pairs in ${base.partitions} partitions and ` +
+        `ρ₁ on the ${fmt(base.symbols)} symbols, each part independently of the others: ${runs.map(r => `${hwText(r.parallel)} ` +
+        `${r.parallel === 1 ? 'runs' : 'run'} ${perCore(r.parallel)} input partition${perCore(r.parallel) === 1 ? '' : 's'} per core`).join(', ')}. ` +
         `Both rounds are one Spark job, so the fixed cost of coordinating it is paid once, not once per step as in the threshold greedy. ` +
         `<b>Why not linear.</b> The shuffles send every pair ⟨x<sub>i</sub>; i⟩ over the network to its symbol's reducer, ` +
         `and ρ₂ runs on a single machine: all ${fmt(base.symbols)} values meet at the key $. ` +
@@ -1684,16 +1686,16 @@ $('kfmBtn').addEventListener('click', () => showKfm(true));
 $('kfmClose').addEventListener('click', () => showKfm(false));
 $('kfmView').addEventListener('click', e => { if (e.target === $('kfmView')) showKfm(false); });
 document.querySelectorAll('input[name="kfmSize"]').forEach(r => r.addEventListener('change', () => {
-    kfmSizeTouched = true;
+    kfmTouched = true;
     renderKfm();
 }));
-$('kfmK').addEventListener('change', () => { kfmSizeTouched = true; renderKfm(); });
+$('kfmK').addEventListener('change', () => { kfmTouched = true; renderKfm(); });
 $('kfmRun').addEventListener('click', async () => {
     try {
         if (analysis.running) {
             await fetch('/analysis/stop', { method: 'POST' });
         } else {
-            kfmSizeTouched = false;
+            kfmTouched = false;
             await fetch('/kfm/analysis', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
