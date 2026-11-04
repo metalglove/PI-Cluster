@@ -153,6 +153,8 @@ async def update_event(request: Request):
 
 ALGORITHMS = ("greedy", "theorem8", "alg5")   # the circle cover algorithms; "kfm" has its own analysis
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# The master UI listens on SPARK_MASTER_HOST when spark-env.sh sets SPARK_LOCAL_IP, so not on 127.0.0.1
+SPARK_MASTER_UI = f"http://{os.environ.get('SPARK_MASTER_HOST', '127.0.0.1')}:8080/json/"
 # Detect if we're on Pi cluster or local Windows/Mac
 IS_PI_CLUSTER = os.path.exists("/home/pi/spark-env/bin/python")
 
@@ -243,7 +245,7 @@ def alive_workers() -> int:
     """Workers the local Spark master lists as alive (0 when there is no master)."""
     import urllib.request
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8080/json/", timeout=5) as response:
+        with urllib.request.urlopen(SPARK_MASTER_UI, timeout=5) as response:
             workers = json.loads(response.read()).get("workers", [])
         return sum(1 for w in workers if w.get("state") == "ALIVE")
     except Exception:
@@ -348,7 +350,7 @@ async def cluster_status():
     import json as json_lib
     try:
         # Spark Master API
-        master_url = "http://127.0.0.1:8080/json/"
+        master_url = SPARK_MASTER_UI
         
         with urllib.request.urlopen(master_url) as response:
             data = response.read()

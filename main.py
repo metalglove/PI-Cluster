@@ -56,8 +56,10 @@ os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
 
 # used when running in cluster mode (raspberry pi) to specify the Spark master URL; otherwise, 
 # ignored when running in local mode (e.g., on a single machine with multiple cores).
-SPARK_MASTER_URL = "spark://192.168.1.223:7077"
-SPARK_MASTER_UI = "http://192.168.1.223:8080/json/"   # lists the workers that are alive
+# Set SPARK_MASTER_HOST to point at another cluster (the professor's uses 192.168.50.11).
+SPARK_MASTER_HOST = os.environ.get("SPARK_MASTER_HOST", "192.168.1.223")
+SPARK_MASTER_URL = f"spark://{SPARK_MASTER_HOST}:7077"
+SPARK_MASTER_UI = f"http://{SPARK_MASTER_HOST}:8080/json/"   # lists the workers that are alive
 CORES_PER_PI = 4   # one executor of this many cores per Pi, so N Pis = N executors
 
 # Problem parameters, the same for every algorithm
