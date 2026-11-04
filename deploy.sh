@@ -9,51 +9,59 @@ GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-echo -e "${CYAN}Deploying to Pi Cluster...${NC}"
+MASTER=${MASTER:-raspberrypi}   # e.g. MASTER=pi1 ./deploy.sh
+
+echo -e "${CYAN}Deploying to Pi Cluster ($MASTER)...${NC}"
+ssh pi@$MASTER "mkdir -p /home/pi/ui"
 echo ""
 
 # Main algorithm
 echo -e "${YELLOW}[1/5] Deploying main.py, data.py, oracle.py, viz_client.py and algorithms/...${NC}"
-scp main.py data.py oracle.py viz_client.py pi@raspberrypi:/home/pi/
-scp -r algorithms pi@raspberrypi:/home/pi/
+scp main.py data.py oracle.py viz_client.py pi@$MASTER:/home/pi/
+scp -r algorithms pi@$MASTER:/home/pi/
 
 # Visualization server
 echo -e "${YELLOW}[2/5] Deploying viz_server.py...${NC}"
-scp viz_server.py pi@raspberrypi:/home/pi/viz_server.py
+scp viz_server.py pi@$MASTER:/home/pi/viz_server.py
 
 # UI files
 echo -e "${YELLOW}[3/5] Deploying UI HTML...${NC}"
-scp ui/index.html pi@raspberrypi:/home/pi/ui/index.html
+scp ui/index.html pi@$MASTER:/home/pi/ui/index.html
 
 echo -e "${YELLOW}[4/5] Deploying UI CSS...${NC}"
-scp ui/style.css pi@raspberrypi:/home/pi/ui/style.css
+scp ui/style.css pi@$MASTER:/home/pi/ui/style.css
 
 echo -e "${YELLOW}[5/5] Deploying UI JavaScript...${NC}"
-scp ui/script.js pi@raspberrypi:/home/pi/ui/script.js
+scp ui/script.js pi@$MASTER:/home/pi/ui/script.js
 
 echo ""
 echo -e "${GREEN}✓ Deployment complete!${NC}"
 echo ""
 
-echo -e "${YELLOW}Stopping existing server...${NC}"
-ssh pi@raspberrypi "pkill -f viz_server.py"
-sleep 1
+if ssh pi@$MASTER "systemctl cat viz-server >/dev/null 2>&1"; then
+    echo -e "${YELLOW}Restarting viz-server service...${NC}"
+    ssh pi@$MASTER "sudo systemctl restart viz-server"
+else
+    echo -e "${YELLOW}Stopping existing server...${NC}"
+    ssh pi@$MASTER "pkill -f viz_server.py"
+    sleep 1
 
-echo -e "${YELLOW}Starting new server in background...${NC}"
-# Using a specific bash wrapper and disown to ensure process survival
-ssh pi@raspberrypi "cd /home/pi && (nohup /home/pi/spark-env/bin/python viz_server.py > viz_server.log 2>&1 &)"
+    echo -e "${YELLOW}Starting new server in background...${NC}"
+    # Using a specific bash wrapper and disown to ensure process survival
+    ssh pi@$MASTER "cd /home/pi && (nohup /home/pi/spark-env/bin/python viz_server.py > viz_server.log 2>&1 &)"
+fi
 
 echo -e "${YELLOW}Waiting for startup...${NC}"
 sleep 5
 
 # Verification step
-check=$(ssh pi@raspberrypi "netstat -tuln | grep :8000")
+check=$(ssh pi@$MASTER "ss -tln | grep :8000")
 if [[ $check == *"8000"* ]]; then
     echo -e "${GREEN}✓ Server restarted and listening on port 8000!${NC}"
 else
     echo -e "${RED}⚠ WARNING: Server might not have started correctly. Check viz_server.log on Pi.${NC}"
-    ssh pi@raspberrypi "tail -n 10 /home/pi/viz_server.log"
+    ssh pi@$MASTER "tail -n 10 /home/pi/viz_server.log"
 fi
 
 echo ""
-echo -e "${YELLOW}Access the UI at: http://raspberrypi:8000${NC}"
+echo -e "${YELLOW}Access the UI at: http://$MASTER:8000${NC}"
