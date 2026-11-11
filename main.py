@@ -17,6 +17,7 @@ USAGE (local mode):
     python main.py --algorithm alg5 --t 3 --size small
     python main.py --algorithm kfm --moment 2 --size small
     python main.py --algorithm kfm --moment 3 --input some_text.txt
+    python main.py --algorithm kfm --moment 2 --length 5000000 --alphabet 1 --repeats 5
 
 USAGE (cluster mode):
     python main.py --cluster --algorithm theorem8 --size medium
@@ -25,7 +26,7 @@ USAGE (with the visualization server):
     python main.py --ui-url http://localhost:8000 --size medium
 
 SIZE OPTIONS: small (2K points, 500 circles), medium (25K, 2000), large (100K, 5000)
-              for kfm: a string of 1M, 10M or 30M symbols
+              for kfm: a string of 1M, 10M or 30M symbols, or --length N; --alphabet A and --repeats R
 """
 
 import argparse
@@ -148,6 +149,10 @@ def stage_timings(sc, job_group: str) -> list:
     How long each Spark stage of a job group took and which machines ran its tasks, from the driver's
     monitoring API. Spark cuts a job into stages at every shuffle, so the algorithm's 2 rounds are
     3 stages: mu_1 | rho_1 and mu_2 | rho_2. Returns [] when the API can't be reached.
+
+    It also returns the communication of each stage, from the tasks' shuffle metrics: how long the
+    tasks waited for shuffle data from the other machines (fetch_wait_ms, out of task_ms in total),
+    and how many bytes they read from other machines (remote_bytes) or from their own (local_bytes).
     """
     from datetime import datetime
     if not sc.uiWebUrl:
@@ -175,15 +180,24 @@ def stage_timings(sc, job_group: str) -> list:
                 time.sleep(0.25)
             if attempt.get("status") != "COMPLETE":
                 # keep its place, so the stages stay in order (mu_1, rho_1 + mu_2, rho_2)
-                stages.append({"stage": sid, "s": 0, "tasks": attempt.get("numTasks"), "hosts": {}})
+                stages.append({"stage": sid, "s": 0, "tasks": attempt.get("numTasks"), "hosts": {},
+                               "task_ms": 0, "fetch_wait_ms": 0, "remote_bytes": 0, "local_bytes": 0})
                 continue
             hosts = {}
+            task_ms = fetch_wait_ms = remote_bytes = local_bytes = 0
             for task in get(f"{api}/{sid}/{attempt['attemptId']}/taskList?length=100000"):
                 h = hosts.setdefault(task.get("host", "?"), {"tasks": 0, "ms": 0})
                 h["tasks"] += 1
                 h["ms"] += task.get("duration", 0)
+                # the shuffle read: the pairs this task's reducer gets, from other machines over the network or from its own
+                read = (task.get("taskMetrics") or {}).get("shuffleReadMetrics") or {}
+                task_ms += task.get("duration", 0)
+                fetch_wait_ms += read.get("fetchWaitTime", 0)
+                remote_bytes += read.get("remoteBytesRead", 0)
+                local_bytes += read.get("localBytesRead", 0)
             stages.append({"stage": sid, "s": round(seconds(attempt["completionTime"]) - seconds(attempt["submissionTime"]), 2),
-                           "tasks": attempt.get("numTasks"), "hosts": hosts})
+                           "tasks": attempt.get("numTasks"), "hosts": hosts, "task_ms": task_ms,
+                           "fetch_wait_ms": fetch_wait_ms, "remote_bytes": remote_bytes, "local_bytes": local_bytes})
     except Exception as e:
         print(f"  (no stage timings: {e})")
         return []
@@ -193,9 +207,11 @@ def stage_timings(sc, job_group: str) -> list:
 def run_frequency_moment(args, hardware: dict) -> None:
     """
     Start-up for --algorithm kfm: the input is a string x instead of points and circles, so this
-    starts Spark, puts the n pairs <i; x_i> on the machines, runs Algorithm k-FrequencyMoment, checks
-    its answer and (with --ui-url) sends the wall time to the dashboard for its speedup graph.
+    starts Spark, puts the n pairs <i; x_i> on the machines, runs Algorithm k-FrequencyMoment (--repeats
+    times, on the same input), checks its answer and (with --ui-url) sends the wall time of every run
+    to the dashboard for its speedup graph.
     """
+    alphabet = args.alphabet
     if args.input:
         with open(args.input, encoding="utf-8") as f:
             x = f.read()
@@ -206,18 +222,38 @@ def run_frequency_moment(args, hardware: dict) -> None:
             return
     else:
         x = None
-        n, source = STRING_SIZES[args.size], f"random string over {STRING_ALPHABET_SIZE} symbols ({args.size.upper()})"
+        n = args.length or STRING_SIZES[args.size]
+        source = f"random string over {alphabet:,} symbol{'s' if alphabet != 1 else ''}" + \
+            ("" if args.length else f" ({args.size.upper()})")
 
     print("=" * 60)
     print("k-th Frequency Moment - kfm")
     print("=" * 60)
     print(f"Mode: {'CLUSTER' if args.cluster else 'LOCAL'}")
     print(f"Input: {source}, n = {n:,} symbols")
-    print(f"k = {args.moment}")
+    print(f"k = {args.moment}, {args.repeats} run(s)")
     print("Running on " +
           (f"{hardware['pis']} Pis" if "pis" in hardware else f"{hardware['cores']} cores" if hardware else "all Pis"))
     ui = UIClient(args.ui_url) if args.ui_url else None
     print("=" * 60)
+
+    # check against counting on the driver: how often each symbol occurs
+    if x is None:
+        counts = string_counts(n, alphabet)
+    else:
+        by_symbol = {}
+        for s in x:
+            by_symbol[s] = by_symbol.get(s, 0) + 1
+        counts = list(by_symbol.values())
+    expected = sum(c ** args.moment for c in counts)
+    largest = max(counts) if counts else 0
+
+    unit = "pis" if "pis" in hardware else "cores" if "cores" in hardware else None
+    # What every run of this input sends to the dashboard; the dashboard groups runs by n, |Sigma| and k
+    run_info = {"size": "file" if x is not None else ("custom" if args.length else args.size), "n": n,
+                "alphabet": alphabet if x is None else None, "k": args.moment, "symbols": len(counts),
+                "largest_reducer": largest, "unit": unit, "parallel": hardware.get(unit) if unit else None,
+                "cores_per_pi": hardware.get("cores_per_pi"), "repeats": args.repeats}
 
     print("\nInitializing PySpark...")
     spark = create_spark_session("FrequencyMoment", cluster_mode=args.cluster,
@@ -229,45 +265,45 @@ def run_frequency_moment(args, hardware: dict) -> None:
     # The input is on the machines before the algorithm starts: generate (or send) the pairs and keep them in memory
     print("\nPutting the input pairs <i; x_i> on the machines...")
     started = time.time()
-    pairs = generate_string_pairs(sc, n) if x is None else sc.parallelize(list(enumerate(x, start=1)), max(1, min(n, STRING_CHUNKS)))
+    pairs = generate_string_pairs(sc, n, alphabet) if x is None else sc.parallelize(list(enumerate(x, start=1)), max(1, min(n, STRING_CHUNKS)))
     pairs.cache().count()
     load_s = time.time() - started
     print(f"  {n:,} pairs in {pairs.getNumPartitions()} partitions, {load_s:.1f} s")
 
     print("\nRunning k-FrequencyMoment...")
     print("-" * 60)
-    sc.setJobGroup("kfm", "Algorithm k-FrequencyMoment")
-    started = time.time()
-    f_k = k_frequency_moment(pairs, args.moment)
-    elapsed = time.time() - started
-    stages = stage_timings(sc, "kfm")
+    for repeat in range(1, args.repeats + 1):
+        sc.setJobGroup(f"kfm-{repeat}", "Algorithm k-FrequencyMoment")
+        started = time.time()
+        try:
+            f_k = k_frequency_moment(pairs, args.moment)
+        except Exception as e:
+            # e.g. a reducer that runs out of memory on a badly skewed string: report it instead of a number
+            elapsed = time.time() - started
+            reason = str(e).strip().splitlines()[0][:300] if str(e).strip() else type(e).__name__
+            print(f"  Run {repeat}: FAILED after {elapsed:.1f} s: {reason}")
+            if ui:
+                ui.send("KFM_RESULT", {**run_info, "repeat": repeat, "error": reason, "elapsed_s": round(elapsed, 2),
+                                       "load_s": round(load_s, 2), "partitions": pairs.getNumPartitions(),
+                                       "stages": stage_timings(sc, f"kfm-{repeat}")})
+            break
+        elapsed = time.time() - started
+        stages = stage_timings(sc, f"kfm-{repeat}")
 
-    # check against counting on the driver
-    if x is None:
-        counts = string_counts(n)
-    else:
-        counts = {}
-        for s in x:
-            counts[s] = counts.get(s, 0) + 1
-    expected = sum(c ** args.moment for c in counts.values())
+        print(f"  Run {repeat}: f_{args.moment}(x) = {f_k} in {elapsed:.1f} s "
+              f"({'OK' if f_k == expected else 'MISMATCH with the driver: ' + str(expected)})")
+        for name, stage in zip(("mu_1", "rho_1 + mu_2", "rho_2"), stages):
+            print(f"    Stage {name}: {stage['s']:.1f} s, {stage['tasks']} tasks on {len(stage['hosts'])} machine(s), "
+                  f"{stage['remote_bytes'] / 1e6:.1f} MB from other machines, "
+                  f"waited {stage['fetch_wait_ms'] / 1000:.1f} of {stage['task_ms'] / 1000:.1f} task-seconds for them")
+        if ui:
+            ui.send("KFM_RESULT", {**run_info, "repeat": repeat, "f_k": f_k, "check": f_k == expected,
+                                   "partitions": pairs.getNumPartitions(), "elapsed_s": round(elapsed, 2),
+                                   "load_s": round(load_s, 2), "stages": stages})
 
     print("-" * 60)
-    print("\nRESULTS:")
-    print(f"  f_{args.moment}(x) = {f_k}")
-    print(f"  Check (counted on the driver): {expected} -> {'OK' if f_k == expected else 'MISMATCH'}")
-    print(f"  Symbols: |Sigma| = {len(counts)}, largest reducer in round 1: {max(counts.values()) if counts else 0:,} of {n:,} pairs")
-    for name, stage in zip(("mu_1", "rho_1 + mu_2", "rho_2"), stages):
-        print(f"  Stage {name}: {stage['s']:.1f} s, {stage['tasks']} tasks on {len(stage['hosts'])} machine(s)")
-    print(f"  Wall time: {elapsed:.1f} s (plus {load_s:.1f} s to put the input on the machines)")
-
-    if ui:
-        unit = "pis" if "pis" in hardware else "cores" if "cores" in hardware else None
-        ui.send("KFM_RESULT", {"size": "file" if x is not None else args.size, "n": n, "k": args.moment,
-                               "f_k": f_k, "check": f_k == expected, "symbols": len(counts),
-                               "largest_reducer": max(counts.values()) if counts else 0,
-                               "unit": unit, "parallel": hardware.get(unit) if unit else None,
-                               "cores_per_pi": hardware.get("cores_per_pi"), "partitions": pairs.getNumPartitions(),
-                               "elapsed_s": round(elapsed, 2), "load_s": round(load_s, 2), "stages": stages})
+    print(f"\n  Symbols: |Sigma| = {len(counts):,}, largest reducer in round 1: {largest:,} of {n:,} pairs")
+    print(f"  (plus {load_s:.1f} s to put the input on the machines)")
 
     spark.stop()
     print("\nDone!")
@@ -291,9 +327,16 @@ def main():
     parser.add_argument("--moment", type=int, default=2, help="kfm: which frequency moment k to compute")
     parser.add_argument("--input", type=str, help="kfm: text file whose characters are the string x "
                                                   "(default: a random string of 1M, 10M or 30M symbols for small, medium, large)")
+    parser.add_argument("--length", type=int, help="kfm: length n of the random string (instead of --size)")
+    parser.add_argument("--alphabet", type=int, default=STRING_ALPHABET_SIZE,
+                        help=f"kfm: alphabet size |Sigma| of the random string (default {STRING_ALPHABET_SIZE}; "
+                             "1 gives a string of one repeated symbol)")
+    parser.add_argument("--repeats", type=int, default=1, help="kfm: how many times to run the algorithm on the same input")
     parser.add_argument("--pis", type=int, help="cluster mode: number of Pis to run on (default: all alive workers)")
     parser.add_argument("--cores", type=int, help="local mode: number of cores to run on (default: all)")
     args = parser.parse_args()
+    args.alphabet = max(1, args.alphabet)
+    args.repeats = max(1, args.repeats)
 
     config = SIZE_CONFIGS[args.size]
 

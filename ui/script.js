@@ -1311,7 +1311,7 @@ function renderAnalysisQueue() {
     if (!analysis.running) return;
     const unit = analysis.unit || 'pis';
     const timeOf = (a, n) => a === 'kfm'
-        ? kfmRunOf(analysis.size, analysis.moment, unit, n)
+        ? kfmRunOf({ n: analysis.n, alphabet: analysis.alphabet, k: analysis.moment }, unit, n)
         : (analysis.results || []).find(r => r.algorithm === a && r.parallel === n && r.unit === unit &&
             (r.dataset || '').startsWith(analysis.size + '/') && (a !== 'alg5' || r.t === analysis.t));
     const items = analysis.plan.map(([a, n], i) => {
@@ -1326,7 +1326,8 @@ function renderAnalysisQueue() {
         }
         return `<span class="aq-item">${label}</span>`;
     });
-    const title = analysis.kind === 'kfm' ? `Frequency moment, n = ${KFM_N[analysis.size]}, k = ${analysis.moment}:`
+    const title = analysis.kind === 'kfm' ? `Frequency moment, n = ${shortCount(analysis.n)}, |Σ| = ${shortCount(analysis.alphabet)}, ` +
+        `k = ${analysis.moment}, ${analysis.repeats} run${analysis.repeats === 1 ? '' : 's'} each:`
         : analysis.kind === 'speedup' ? `Speedup, ${planName(analysis.algorithm)}, ${analysis.size}:`
         : `Full analysis, ${analysis.size}:`;
     q.innerHTML = `<span class="aq-title">${title}</span>${items.join('')}`;
@@ -1614,9 +1615,9 @@ $('suRun').addEventListener('click', async () => {
 });
 
 // --- The k-th frequency moment: the same string on 1, 2, ... N Pis (or cores) ---
-// main.py --algorithm kfm sends one KFM_RESULT per run, with its wall time per Spark stage; viz_server
-// keeps the latest per size, k and hardware size. Its own analysis runs it on every hardware size.
-const KFM_N = { small: '1M', medium: '10M', large: '30M' };
+// main.py --algorithm kfm sends one KFM_RESULT per run, with its wall time per Spark stage and the shuffle data
+// each stage read from the other machines; viz_server saves every run. Its own analysis runs the string
+// several times on every hardware size, so each hardware size gets a box plot of wall times, not one number.
 const KFM_STAGES = ['μ₁', 'ρ₁ + μ₂', 'ρ₂'];
 const KFM_CODE = [
     { head: 'Round 1' },
@@ -1633,138 +1634,376 @@ const KFM_CODE = [
 $('kfmCode').innerHTML = KFM_CODE.map(l => l.head ? `<li class="head">${l.head}</li>`
     : l.note ? `<li class="note i1">${l.note}</li>` : `<li>${l.text}</li>`).join('');
 
-let kfmTouched = false;   // after the user picks n or k, show those instead of the last frequency moment analysis'
-const kfmSelectedSize = () => document.querySelector('input[name="kfmSize"]:checked').value;
-const kfmFollowsAnalysis = () => analysis.kind === 'kfm' && analysis.size && (analysis.running || !kfmTouched);
-const kfmSize = () => kfmFollowsAnalysis() ? analysis.size : kfmSelectedSize();
-const kfmK = () => kfmFollowsAnalysis() ? analysis.moment : Number($('kfmK').value);
-const kfmRunOf = (size, k, unit, n) => (analysis.kfm_results || []).find(r =>
-    r.size === size && r.k === k && r.unit === unit && r.parallel === n);
+// Inputs to pick from: random strings of three lengths, and two badly skewed ones to show what goes wrong
+const KFM_PRESETS = [
+    { id: 'small', name: 'Random, n = 1M', n: 1e6, alphabet: 1000 },
+    { id: 'medium', name: 'Random, n = 10M', n: 1e7, alphabet: 1000 },
+    { id: 'large', name: 'Random, n = 30M', n: 3e7, alphabet: 1000 },
+    { id: 'one', name: 'Skewed: one symbol (a a a …)', n: 1e6, alphabet: 1,
+      note: 'Every pair has the same key, so all n pairs go to one reducer ρ₁ on one machine: more Pis cannot help, ' +
+            'and a long enough string runs that reducer out of memory.' },
+    { id: 'huge', name: 'Skewed: huge alphabet (|Σ| = n)', n: 1e6, alphabet: 1e6,
+      note: 'Almost every symbol is different, so round 1 hardly combines anything and the one reducer for $ in ' +
+            'round 2 gets about 0.63 n values instead of |Σ| = 1,000.' }
+];
+let kfmConfigs = [];       // custom inputs saved on the dashboard (viz_server keeps them in kfm_configs.json)
+let kfmTouched = false;    // after the user changes the input or k, show those instead of the last analysis'
+const shortCount = n => n >= 1e6 && n % 1e5 === 0 ? `${n / 1e6}M` : n >= 1e3 && n % 100 === 0 && n < 1e6 ? `${n / 1e3}K` : fmt(n);
+const kfmFollowsAnalysis = () => analysis.kind === 'kfm' && analysis.n && (analysis.running || !kfmTouched);
+const kfmField = id => Math.max(1, Math.round(Number($(id).value) || 1));
+// The input, k and runs per size the view shows: the running analysis', or the pickers'
+const kfmInput = () => kfmFollowsAnalysis()
+    ? { n: analysis.n, alphabet: analysis.alphabet, k: analysis.moment }
+    : { n: kfmField('kfmN'), alphabet: kfmField('kfmAlphabet'), k: Number($('kfmK').value) };
+const sameInput = (r, inp) => r.n === inp.n && (r.alphabet ?? 1000) === inp.alphabet && r.k === inp.k;
 
+function kfmOptions() {
+    const saved = kfmConfigs.map(c => `<option value="saved:${c.name.replace(/"/g, '&quot;')}">Saved: ${c.name.replace(/</g, '&lt;')}</option>`);
+    $('kfmPreset').innerHTML = KFM_PRESETS.map(p => `<option value="${p.id}">${p.name}</option>`).join('') +
+        saved.join('') + '<option value="custom">Custom</option>';
+}
+// The preset or saved input that n and |Σ| match, or custom
+function kfmMatch(n, alphabet) {
+    const p = KFM_PRESETS.find(p => p.n === n && p.alphabet === alphabet);
+    if (p) return { value: p.id, preset: p };
+    const c = kfmConfigs.find(c => c.n === n && c.alphabet === alphabet);
+    return c ? { value: `saved:${c.name}`, saved: c } : { value: 'custom' };
+}
+function kfmSetFields(n, alphabet) {
+    $('kfmN').value = String(n);
+    $('kfmAlphabet').value = String(alphabet);
+}
+
+// Every hardware size's runs of one input: all of them, the ones that finished, and the median run
+const median = xs => { const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+function quantile(sorted, q) {
+    const i = (sorted.length - 1) * q, lo = Math.floor(i), hi = Math.ceil(i);
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo);
+}
+function kfmGroups(inp, unit) {
+    const byN = new Map();
+    (analysis.kfm_results || []).filter(r => r.parallel && r.unit === unit && sameInput(r, inp)).forEach(r => {
+        if (!byN.has(r.parallel)) byN.set(r.parallel, []);
+        byN.get(r.parallel).push(r);
+    });
+    return [...byN.entries()].sort((a, b) => a[0] - b[0]).map(([parallel, all]) => {
+        const ok = all.filter(r => !r.error).sort((a, b) => a.elapsed_s - b.elapsed_s);
+        const times = ok.map(r => r.elapsed_s);
+        return { parallel, all, ok, failed: all.filter(r => r.error), times,
+                 med: times.length ? median(times) : null, rep: ok.length ? ok[(ok.length - 1) >> 1] : null };
+    });
+}
 function kfmRows() {
-    const size = kfmSize(), k = kfmK();
-    const mine = (analysis.kfm_results || []).filter(r => r.size === size && r.k === k && r.parallel);
-    const unit = mine.some(r => r.unit === 'pis') ? 'pis' : 'cores';
-    const runs = mine.filter(r => r.unit === unit).sort((a, b) => a.parallel - b.parallel);
-    return { size, k, unit, runs };
+    const inp = kfmInput();
+    const mine = (analysis.kfm_results || []).filter(r => r.parallel && sameInput(r, inp));
+    const unit = mine.some(r => r.unit === (analysis.unit || hw.unit)) ? (analysis.unit || hw.unit)
+        : mine.some(r => r.unit === 'pis') ? 'pis' : 'cores';
+    return { inp, unit, groups: kfmGroups(inp, unit) };
+}
+// The analysis queue's chip for one hardware size: the median of its runs
+const kfmRunOf = (inp, unit, n) => {
+    const g = kfmGroups(inp, unit).find(g => g.parallel === n);
+    return g && g.med != null ? { elapsed_s: g.med } : null;
+};
+
+async function loadKfmConfigs() {
+    try { kfmConfigs = await (await fetch('/kfm/configs', { cache: 'no-store' })).json(); } catch (e) { kfmConfigs = []; }
+    kfmOptions();
 }
 
 async function showKfm(on) {
     $('kfmView').hidden = !on;
     if (!on) return;
-    await refreshAnalysis();
+    await Promise.all([refreshAnalysis(), loadKfmConfigs()]);
     renderKfm();
+}
+
+// Box plots of every run's wall time per hardware size, with the medians joined and the ideal speedup dashed
+function drawKfmBoxes(canvas, unit, groups) {
+    const { ctx, w, h } = setupCanvas(canvas);
+    ctx.clearRect(0, 0, w, h);
+    const pad = { l: 44, r: 12, t: 22, b: 36 };
+    const iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+    const shown = groups.filter(g => g.times.length);
+    const base = shown[0];
+    const maxT = Math.max(...shown.flatMap(g => g.times)) * 1.08 || 1;
+    const step = [0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300, 600].find(s => maxT / s <= 6) || 1200;
+    const slot = iw / groups.length;
+    const X = i => pad.l + slot * (i + 0.5);
+    const Y = v => pad.t + ih - (v / maxT) * ih;
+    const font = getComputedStyle(document.body).fontFamily;
+    ctx.font = '11px ' + font;
+    ctx.lineWidth = 1;
+    for (let v = 0; v <= maxT; v += step) {
+        ctx.strokeStyle = v === 0 ? C.ruleStrong : C.rule;
+        ctx.beginPath(); ctx.moveTo(pad.l, Y(v)); ctx.lineTo(pad.l + iw, Y(v)); ctx.stroke();
+        ctx.fillStyle = C.muted; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+        ctx.fillText(`${v} s`, pad.l - 6, Y(v));
+    }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    groups.forEach((g, i) => ctx.fillText(String(g.parallel), X(i), pad.t + ih + 6));
+    ctx.fillText(unit === 'pis' ? 'Pis' : 'cores', pad.l + iw / 2, pad.t + ih + 20);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('wall time of every run · dashed: ideal (twice the hardware, half the time)', pad.l, 2);
+
+    const idx = g => groups.indexOf(g);
+    // ideal: the median on the fewest machines, divided by how many times more hardware there is
+    if (base && shown.length > 1) {
+        ctx.strokeStyle = C.muted; ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        shown.forEach((g, j) => { const y = Y(base.med * base.parallel / g.parallel); j ? ctx.lineTo(X(idx(g)), y) : ctx.moveTo(X(idx(g)), y); });
+        ctx.stroke(); ctx.setLineDash([]);
+    }
+    // medians joined, so the trend reads at a glance
+    const color = C.machines[1];
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.6;
+    ctx.beginPath(); shown.forEach((g, j) => j ? ctx.lineTo(X(idx(g)), Y(g.med)) : ctx.moveTo(X(idx(g)), Y(g.med))); ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    const bw = Math.min(36, slot * 0.45);
+    shown.forEach(g => {
+        const x = X(idx(g)), s = g.times;
+        const q1 = quantile(s, 0.25), q3 = quantile(s, 0.75), iqr = q3 - q1;
+        const inside = s.filter(t => t >= q1 - 1.5 * iqr && t <= q3 + 1.5 * iqr);
+        const lo = Math.min(...inside), hi = Math.max(...inside);
+        ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+        // whiskers
+        ctx.beginPath(); ctx.moveTo(x, Y(lo)); ctx.lineTo(x, Y(q1)); ctx.moveTo(x, Y(q3)); ctx.lineTo(x, Y(hi));
+        ctx.moveTo(x - bw / 4, Y(lo)); ctx.lineTo(x + bw / 4, Y(lo)); ctx.moveTo(x - bw / 4, Y(hi)); ctx.lineTo(x + bw / 4, Y(hi)); ctx.stroke();
+        // box from the first to the third quartile, the median across it
+        ctx.fillStyle = C.surface;
+        ctx.fillRect(x - bw / 2, Y(q3), bw, Math.max(1, Y(q1) - Y(q3)));
+        ctx.globalAlpha = 0.18; ctx.fillStyle = color;
+        ctx.fillRect(x - bw / 2, Y(q3), bw, Math.max(1, Y(q1) - Y(q3)));
+        ctx.globalAlpha = 1;
+        ctx.strokeRect(x - bw / 2, Y(q3), bw, Math.max(1, Y(q1) - Y(q3)));
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.moveTo(x - bw / 2, Y(g.med)); ctx.lineTo(x + bw / 2, Y(g.med)); ctx.stroke();
+        // every run as a dot beside the box; the ones beyond the whiskers (outliers) hollow and further out
+        s.forEach((t, j) => {
+            const out = t < lo || t > hi;
+            const dx = x + bw / 2 + 6 + (j % 3) * 3;
+            ctx.beginPath(); ctx.arc(out ? x : dx, Y(t), out ? 3.5 : 2, 0, Math.PI * 2);
+            if (out) { ctx.lineWidth = 1.5; ctx.strokeStyle = C.machines[0]; ctx.stroke(); ctx.strokeStyle = color; }
+            else { ctx.fillStyle = color; ctx.globalAlpha = 0.55; ctx.fill(); ctx.globalAlpha = 1; }
+        });
+    });
+    // hardware sizes where every run failed
+    groups.filter(g => !g.times.length).forEach(g => {
+        ctx.fillStyle = C.machines[0]; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.fillText('failed', X(idx(g)), pad.t + ih - 4);
+    });
 }
 
 function renderKfm() {
     const unitNow = analysis.unit || hw.unit;
     const U = unitNow === 'pis' ? 'Pis' : 'cores';
-    document.querySelectorAll('.kfm-unit').forEach(el => { el.textContent = U; });
     const mineRunning = analysis.running && analysis.kind === 'kfm';
     const btn = $('kfmRun');
-    btn.textContent = mineRunning ? `Stop (run ${analysis.done + 1} of ${analysis.plan.length})`
+    btn.textContent = mineRunning ? `Stop (${analysis.done + 1} of ${analysis.plan.length})`
         : `Run on 1, 2, … all ${U}`;
     btn.disabled = !wsOpen || (analysis.running && !mineRunning) || (!analysis.running && runInProgress());
-    document.querySelectorAll('input[name="kfmSize"], #kfmK').forEach(el => { el.disabled = mineRunning; });
+    document.querySelectorAll('#kfmPreset, #kfmN, #kfmAlphabet, #kfmK, #kfmRepeats, #kfmClear')
+        .forEach(el => { el.disabled = mineRunning; });
     if (kfmFollowsAnalysis()) {
         // the pickers show what the results below were run with
-        document.querySelector(`input[name="kfmSize"][value="${analysis.size}"]`).checked = true;
+        kfmSetFields(analysis.n, analysis.alphabet);
         $('kfmK').value = String(analysis.moment);
+        if (analysis.repeats) $('kfmRepeats').value = String(analysis.repeats);
     }
+    const m = kfmMatch(kfmField('kfmN'), kfmField('kfmAlphabet'));
+    $('kfmPreset').value = m.value;
+    $('kfmForget').hidden = !m.saved;
+    $('kfmPresetNote').textContent = (m.preset && m.preset.note) || '';
     $('kfmQueue').hidden = !mineRunning;
 
-    const { size, k, unit, runs } = kfmRows();
+    const { inp, unit, groups } = kfmRows();
     const hwText = n => `${n} ${unitName(unit, n)}`;
-    if (!runs.length) {
-        $('kfmLede').textContent = mineRunning
-            ? `Running on 1 ${unitName(unitNow, 1)} first. Each bar appears as its run finishes.`
-            : `No runs with n = ${KFM_N[size]} and k = ${k} yet. Press “${btn.textContent}” ` +
-              `to run the algorithm on every number of ${U}, one after another.`;
-        ['kfmHeadline', 'kfmBars', 'kfmTable', 'kfmWhy'].forEach(id => { $(id).innerHTML = ''; });
+    // the title follows the runs shown (Pis or cores), or the hardware the next run uses when there are none
+    document.querySelectorAll('.kfm-unit').forEach(el => { el.textContent = groups.length ? (unit === 'pis' ? 'Pis' : 'cores') : U; });
+    const what = `n = ${shortCount(inp.n)}, |Σ| = ${shortCount(inp.alphabet)} and k = ${inp.k}`;
+    $('kfmClear').hidden = !groups.length;
+    const done = groups.filter(g => g.rep);
+    if (!done.length) {
+        const failures = groups.flatMap(g => g.failed);
+        $('kfmLede').innerHTML = mineRunning
+            ? `Running on 1 ${unitName(unitNow, 1)} first. Each bar appears as its runs finish.`
+            : failures.length ? `Every run with ${what} failed.`
+            : `No runs with ${what} yet. Press “${btn.textContent}” ` +
+              `to run the algorithm ${$('kfmRepeats').value} times on every number of ${U}, one after another.`;
+        $('kfmHeadline').innerHTML = failures.length
+            ? `<ul><li class="warn">${failures.length} run${failures.length === 1 ? '' : 's'} failed: ${escapeText(failures[0].error)}</li></ul>` : '';
+        ['kfmBars', 'kfmTable', 'kfmWhy'].forEach(id => { $(id).innerHTML = ''; });
         $('kfmChart').hidden = true;
         return;
     }
-    const base = runs[0], top = runs[runs.length - 1];
-    const fks = [...new Set(runs.map(r => String(r.f_k)))];
-    $('kfmLede').innerHTML = `A random string of n = ${fmt(base.n)} symbols over |Σ| = ${fmt(base.symbols)} symbols, ` +
-        `in ${base.partitions} input partitions, k = ${k}. Wall time is the algorithm itself, from its first Spark job to ` +
-        `f<sub>k</sub>(x), with the input already on the machines.`;
+    const base = done[0], top = done[done.length - 1];
+    const b = base.rep;
+    const allOk = done.flatMap(g => g.ok);
+    const fks = [...new Set(allOk.map(r => String(r.f_k)))];
+    const failed = groups.flatMap(g => g.failed);
+    $('kfmLede').innerHTML = `A random string of n = ${fmt(inp.n)} symbols drawn from |Σ| = ${fmt(inp.alphabet)} ` +
+        `(${fmt(b.symbols)} of them occur), in ${b.partitions} input partitions, k = ${inp.k}. ` +
+        `Wall time is the algorithm itself, from its first Spark job to f<sub>k</sub>(x), with the input already on the machines. ` +
+        `Bars and table show each hardware size's median run.`;
 
     const lines = [];
     if (top !== base) {
-        const x = base.elapsed_s / top.elapsed_s;
+        const x = base.med / top.med;
         lines.push(`<li><b>${hwText(top.parallel)}</b>: ${x.toFixed(2)}× faster than ${hwText(base.parallel)} ` +
-            `(${fmtS(base.elapsed_s)} → ${fmtS(top.elapsed_s)}), ${Math.round(100 * x / (top.parallel / base.parallel))}% of linear.</li>`);
+            `(median ${fmtS(base.med)} → ${fmtS(top.med)}), ${Math.round(100 * x / (top.parallel / base.parallel))}% of linear.</li>`);
+    }
+    const spread = Math.max(...done.map(g => (g.times[g.times.length - 1] - g.times[0]) / g.med));
+    if (done.some(g => g.times.length > 1)) {
+        lines.push(`<li>${allOk.length} runs; on one hardware size they differ by up to ${Math.round(100 * spread)}% of the median.</li>`);
     }
     lines.push(fks.length === 1
-        ? `<li>f<sub>${k}</sub>(x) = <b>${fmt(Number(fks[0]))}</b> on every run` +
-          (runs.every(r => r.check) ? ', and the same as counting on the driver.' : '.') + '</li>'
-        : `<li class="warn">The runs disagree on f<sub>${k}</sub>(x): ${fks.join(' / ')}.</li>`);
+        ? `<li>f<sub>${inp.k}</sub>(x) = <b>${fmt(Number(fks[0]))}</b> on every run` +
+          (allOk.every(r => r.check) ? ', and the same as counting on the driver.' : '.') + '</li>'
+        : `<li class="warn">The runs disagree on f<sub>${inp.k}</sub>(x): ${fks.join(' / ')}.</li>`);
+    if (failed.length) {
+        lines.push(`<li class="warn">${failed.length} run${failed.length === 1 ? '' : 's'} failed ` +
+            `(${[...new Set(failed.map(r => hwText(r.parallel)))].join(', ')}): ${escapeText(failed[0].error)}</li>`);
+    }
     $('kfmHeadline').innerHTML = `<ul>${lines.join('')}</ul>`;
 
-    // One bar per hardware size, split into the 3 stages, all on the same scale
+    // One bar per hardware size (its median run), split into the 3 stages, all on the same scale. A stage that
+    // reads a shuffle starts by fetching its pairs from the other machines; the hatched part is the share of the
+    // stage's task time spent waiting for that data over the network (Spark's fetchWaitTime), so the
+    // communication between the Pis.
     const stageS = r => KFM_STAGES.map((_, i) => (r.stages && r.stages[i]) ? r.stages[i].s : 0);
-    const maxS = Math.max(...runs.map(r => r.elapsed_s));
+    const waitS = r => KFM_STAGES.map((_, i) => {
+        const st = r.stages && r.stages[i];
+        return st && st.task_ms ? st.s * Math.min(1, (st.fetch_wait_ms || 0) / st.task_ms) : 0;
+    });
+    const sum = a => a.reduce((x, y) => x + y, 0);
+    const remoteMB = r => sum((r.stages || []).map(st => st.remote_bytes || 0)) / 1e6;
+    const shuffledMB = r => sum((r.stages || []).map(st => (st.remote_bytes || 0) + (st.local_bytes || 0))) / 1e6;
+    const remoteShare = r => Math.round(100 * remoteMB(r) / Math.max(1e-9, shuffledMB(r)));
+    const hasNet = done.some(g => (g.rep.stages || []).some(st => st.task_ms !== undefined));
+    const maxS = Math.max(...done.map(g => g.rep.elapsed_s));
     $('kfmBars').innerHTML = `<div class="sb-legend">${KFM_STAGES.map((name, i) =>
-        `<span><i style="background:${C.machines[i]}"></i>${name}</span>`).join('')}<span>rest: scheduling the job</span></div>` +
-        runs.map(r => {
-            const parts = stageS(r);
-            const rest = Math.max(0, r.elapsed_s - parts.reduce((a, b) => a + b, 0));
-            const speedup = base.elapsed_s / r.elapsed_s;
-            const tip = `${hwText(r.parallel)}: ${r.elapsed_s.toFixed(1)} s. ` +
-                parts.map((s, i) => `${KFM_STAGES[i]} ${s.toFixed(1)} s`).join(', ') + `, other ${rest.toFixed(1)} s.`;
+        `<span><i style="background:${C.machines[i]}"></i>${name}</span>`).join('')}` +
+        (hasNet ? `<span><i class="kb-net" style="--c:var(--ink-3)"></i>waiting for data from the other ${unit === 'pis' ? 'Pis' : 'cores'}</span>` : '') +
+        `<span>rest: scheduling the job</span></div>` +
+        done.map(g => {
+            const r = g.rep, parts = stageS(r), waits = waitS(r);
+            const rest = Math.max(0, r.elapsed_s - sum(parts));
+            const speedup = base.med / g.med;
+            const tip = `${hwText(g.parallel)}, median of ${g.ok.length} run${g.ok.length === 1 ? '' : 's'}: ${r.elapsed_s.toFixed(1)} s` +
+                (g.ok.length > 1 ? ` (all runs ${g.times[0].toFixed(1)}–${g.times[g.times.length - 1].toFixed(1)} s)` : '') + '. ' +
+                parts.map((s, i) => `${KFM_STAGES[i]} ${s.toFixed(1)} s` +
+                    (waits[i] >= 0.05 ? ` (${waits[i].toFixed(1)} s waiting for data)` : '')).join(', ') +
+                `, other ${rest.toFixed(1)} s.` +
+                (hasNet ? ` ${remoteMB(r).toFixed(1)} of ${shuffledMB(r).toFixed(1)} MB shuffled went between machines.` : '');
             return `<div class="kb-row" title="${tip}">
-                <span class="kb-hw">${hwText(r.parallel)}</span>
+                <span class="kb-hw">${hwText(g.parallel)}</span>
                 <span class="kb-track" style="width:${Math.max(1, 100 * r.elapsed_s / maxS)}%">
-                    ${parts.map((s, i) => `<span style="flex:${s};--c:${C.machines[i]}"></span>`).join('')}
+                    ${parts.map((s, i) => `<span class="kb-stage" style="flex:${s};--c:${C.machines[i]}">` +
+                        `<span class="kb-net" style="flex:${waits[i]}"></span><span style="flex:${s - waits[i]}"></span></span>`).join('')}
                     <span style="flex:${rest};--c:var(--rule-strong)"></span></span>
-                <span class="kb-val">${fmtS(r.elapsed_s)}${r === base ? '' : ` <small>${speedup.toFixed(2)}×</small>`}</span>
+                <span class="kb-val">${fmtS(r.elapsed_s)}${g === base ? '' : ` <small>${speedup.toFixed(2)}×</small>`}</span>
             </div>`;
         }).join('');
 
-    // Speedup against hardware size, with the ideal (linear) speedup dashed
-    $('kfmChart').hidden = runs.length < 2;
-    if (runs.length >= 2) {
-        drawScalingChart($('kfmChart'), unit, runs.map(r => r.parallel),
-            [{ algorithm: 'kfm', base, byN: new Map(runs.map(r => [r.parallel, r])) }]);
-    }
+    // Every run's wall time per hardware size, as box plots
+    $('kfmChart').hidden = false;
+    drawKfmBoxes($('kfmChart'), unit, groups);
 
-    // Table: time per stage, speedup, efficiency, and which machines ran the tasks
+    // Table: per hardware size its runs, the median run's time per stage, the communication, and the machines
     const hostsOf = r => {
         const tasks = {};
         (r.stages || []).forEach(st => Object.entries(st.hosts || {}).forEach(([h, v]) => { tasks[h] = (tasks[h] || 0) + v.tasks; }));
         return Object.entries(tasks).sort().map(([h, n]) => `${h}: ${fmt(n)}`).join('<br>');
     };
-    $('kfmTable').innerHTML = `<thead><tr><th>${unit === 'pis' ? 'Pis' : 'Cores'}</th><th>Wall time</th><th>Speedup</th>` +
-        `<th>Efficiency</th>${KFM_STAGES.map(n => `<th>${n}</th>`).join('')}<th>f<sub>${k}</sub>(x)</th><th>Tasks per machine</th></tr></thead><tbody>` +
-        runs.map(r => {
-            const speedup = base.elapsed_s / r.elapsed_s;
-            return `<tr><td>${hwText(r.parallel)}</td><td>${r.elapsed_s.toFixed(1)} s</td><td>${speedup.toFixed(2)}×</td>` +
-                `<td>${Math.round(100 * speedup / (r.parallel / base.parallel))}%</td>` +
+    $('kfmTable').innerHTML = `<thead><tr><th>${unit === 'pis' ? 'Pis' : 'Cores'}</th><th>Runs</th><th>Wall time (median)</th>` +
+        `<th>Speedup</th><th>Efficiency</th>${KFM_STAGES.map(n => `<th>${n}</th>`).join('')}` +
+        (hasNet ? `<th>Between ${unit === 'pis' ? 'Pis' : 'cores'}</th><th>Waiting for it</th>` : '') +
+        `<th>f<sub>${inp.k}</sub>(x)</th><th>Tasks per machine</th></tr></thead><tbody>` +
+        groups.map(g => {
+            const runs = `${g.ok.length}${g.failed.length ? ` <span class="warn">+ ${g.failed.length} failed</span>` : ''}`;
+            if (!g.rep) return `<tr><td>${hwText(g.parallel)}</td><td>${runs}</td><td colspan="99" class="warn">${escapeText(g.failed[0].error)}</td></tr>`;
+            const r = g.rep, speedup = base.med / g.med;
+            return `<tr><td>${hwText(g.parallel)}</td><td>${runs}</td><td>${g.med.toFixed(1)} s` +
+                (g.ok.length > 1 ? ` <small>(${g.times[0].toFixed(1)}–${g.times[g.times.length - 1].toFixed(1)})</small>` : '') + `</td>` +
+                `<td>${speedup.toFixed(2)}×</td><td>${Math.round(100 * speedup / (g.parallel / base.parallel))}%</td>` +
                 stageS(r).map(s => `<td>${s.toFixed(1)} s</td>`).join('') +
-                `<td>${fmt(r.f_k)}${r.check ? '' : ' <span class="warn">≠ driver</span>'}</td><td>${hostsOf(r)}</td></tr>`;
+                (hasNet ? `<td>${remoteMB(r).toFixed(1)} MB <small>(${remoteShare(r)}%)</small></td><td>${sum(waitS(r)).toFixed(1)} s</td>` : '') +
+                `<td>${fmt(r.f_k)}${g.ok.every(x => x.check) ? '' : ' <span class="warn">≠ driver</span>'}</td><td>${hostsOf(r)}</td></tr>`;
         }).join('') + '</tbody>';
 
-    const cores = n => unit === 'pis' ? n * (base.cores_per_pi || 4) : n;
-    const perCore = n => Math.ceil(base.partitions / cores(n));
-    $('kfmWhy').innerHTML = `<b>Why it speeds up.</b> μ₁ works on the ${fmt(base.n)} pairs in ${base.partitions} partitions and ` +
-        `ρ₁ on the ${fmt(base.symbols)} symbols, each part independently of the others: ${runs.map(r => `${hwText(r.parallel)} ` +
-        `${r.parallel === 1 ? 'runs' : 'run'} ${perCore(r.parallel)} input partition${perCore(r.parallel) === 1 ? '' : 's'} per core`).join(', ')}. ` +
+    const cores = n => unit === 'pis' ? n * (b.cores_per_pi || 4) : n;
+    const perCore = n => Math.ceil(b.partitions / cores(n));
+    const skew = b.symbols === 1
+        ? `<b>Skewed input.</b> Every pair has the same key, so round 1 has a single reducer: all ${fmt(inp.n)} pairs ` +
+          `cross the network to one machine, which then does all of ρ₁'s work alone. Adding ${unit === 'pis' ? 'Pis' : 'cores'} only ` +
+          `speeds up μ₁. `
+        : b.symbols > inp.n / 10
+        ? `<b>Skewed input.</b> With ${fmt(b.symbols)} different symbols, round 1 combines almost nothing, and the single ` +
+          `reducer for $ in round 2 gets ${fmt(b.symbols)} values on one machine instead of a thousand. ` : '';
+    $('kfmWhy').innerHTML = skew + `<b>Why it speeds up.</b> μ₁ works on the ${fmt(inp.n)} pairs in ${b.partitions} partitions and ` +
+        `ρ₁ on the ${fmt(b.symbols)} symbols, each part independently of the others: ${done.map(g => `${hwText(g.parallel)} ` +
+        `${g.parallel === 1 ? 'runs' : 'run'} ${perCore(g.parallel)} input partition${perCore(g.parallel) === 1 ? '' : 's'} per core`).join(', ')}. ` +
         `Both rounds are one Spark job, so the fixed cost of coordinating it is paid once, not once per step as in the threshold greedy. ` +
         `<b>Why not linear.</b> The shuffles send every pair ⟨x<sub>i</sub>; i⟩ over the network to its symbol's reducer, ` +
-        `and ρ₂ runs on a single machine: all ${fmt(base.symbols)} values meet at the key $. ` +
-        `The largest round-1 reducer holds ${fmt(base.largest_reducer)} of the ${fmt(base.n)} pairs; a string of one repeated ` +
-        `symbol would put all of them on one machine and nothing would speed up.`;
+        `and ρ₂ runs on a single machine: all ${fmt(b.symbols)} values meet at the key $. ` +
+        `The largest round-1 reducer holds ${fmt(b.largest_reducer)} of the ${fmt(inp.n)} pairs; a string of one repeated ` +
+        `symbol would put all of them on one machine and nothing would speed up.` +
+        (hasNet ? ` <b>Communication.</b> The shuffles move the same ${shuffledMB(top.rep).toFixed(1)} MB whatever the hardware; ` +
+            `what changes is how much of it crosses the network: ${done.map(g => `${remoteShare(g.rep)}% on ${hwText(g.parallel)}`).join(', ')} ` +
+            `(about (N − 1) / N on N machines). Every machine sends and receives its share at the same time, so the hatched ` +
+            `wait grows much less than the data that crosses the network.` : '') +
+        (done.some(g => g.times.length > 1) ? ` <b>Spread.</b> Each box holds the middle half of the runs, the thick line is ` +
+            `the median and the whiskers reach the furthest run within 1.5 box lengths; hollow dots beyond them are outliers ` +
+            `(often the first run, while the JVM warms up).` : '');
 }
+
+const escapeText = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 $('kfmBtn').addEventListener('click', () => showKfm(true));
 $('kfmClose').addEventListener('click', () => showKfm(false));
 $('kfmView').addEventListener('click', e => { if (e.target === $('kfmView')) showKfm(false); });
-document.querySelectorAll('input[name="kfmSize"]').forEach(r => r.addEventListener('change', () => {
+$('kfmPreset').addEventListener('change', () => {
+    const v = $('kfmPreset').value;
+    const p = KFM_PRESETS.find(p => p.id === v), c = kfmConfigs.find(c => `saved:${c.name}` === v);
+    if (p || c) kfmSetFields((p || c).n, (p || c).alphabet);
     kfmTouched = true;
     renderKfm();
-}));
-$('kfmK').addEventListener('change', () => { kfmTouched = true; renderKfm(); });
+});
+['kfmN', 'kfmAlphabet', 'kfmK', 'kfmRepeats'].forEach(id => $(id).addEventListener('change', () => { kfmTouched = true; renderKfm(); }));
+$('kfmSave').addEventListener('click', async () => {
+    const n = kfmField('kfmN'), alphabet = kfmField('kfmAlphabet');
+    const name = prompt(`Name for this input (n = ${fmt(n)}, |Σ| = ${fmt(alphabet)}):`);
+    if (!name || !name.trim()) return;
+    try {
+        const reply = await (await fetch('/kfm/configs', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim(), n, alphabet })
+        })).json();
+        if (reply.configs) { kfmConfigs = reply.configs; kfmOptions(); }
+    } catch (e) { console.error('Saving the input failed', e); }
+    renderKfm();
+});
+$('kfmForget').addEventListener('click', async () => {
+    const m = kfmMatch(kfmField('kfmN'), kfmField('kfmAlphabet'));
+    if (!m.saved || !confirm(`Delete the saved input “${m.saved.name}”? Its runs stay.`)) return;
+    try {
+        const reply = await (await fetch('/kfm/configs/delete', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: m.saved.name })
+        })).json();
+        if (reply.configs) { kfmConfigs = reply.configs; kfmOptions(); }
+    } catch (e) { console.error('Deleting the input failed', e); }
+    renderKfm();
+});
+$('kfmClear').addEventListener('click', async () => {
+    const inp = kfmInput();
+    if (!confirm(`Forget every saved run with n = ${fmt(inp.n)}, |Σ| = ${fmt(inp.alphabet)} and k = ${inp.k}?`)) return;
+    try {
+        await fetch('/kfm/runs/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(inp) });
+    } catch (e) { console.error('Clearing the runs failed', e); }
+    await refreshAnalysis();
+    renderKfm();
+});
 $('kfmRun').addEventListener('click', async () => {
     try {
         if (analysis.running) {
@@ -1774,7 +2013,8 @@ $('kfmRun').addEventListener('click', async () => {
             await fetch('/kfm/analysis', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ size: kfmSelectedSize(), k: Number($('kfmK').value) })
+                body: JSON.stringify({ n: kfmField('kfmN'), alphabet: kfmField('kfmAlphabet'),
+                                       k: Number($('kfmK').value), repeats: Number($('kfmRepeats').value) })
             });
         }
     } catch (e) {
@@ -1783,6 +2023,9 @@ $('kfmRun').addEventListener('click', async () => {
     await refreshAnalysis();
     renderKfm();
 });
+window.addEventListener('resize', () => { if (!$('kfmView').hidden) renderKfm(); });
+kfmOptions();
+kfmSetFields(1e7, 1000);
 
 // --- Theme ---
 function renderThemeButton() {

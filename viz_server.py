@@ -24,6 +24,28 @@ if not os.path.exists(UI_DIR):
 
 app.mount("/static", StaticFiles(directory=UI_DIR), name="static")
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Saved frequency moment runs and the custom inputs saved in its view (next to main.py, not in git)
+KFM_RUNS_FILE = os.path.join(SCRIPT_DIR, "kfm_runs.json")
+KFM_CONFIGS_FILE = os.path.join(SCRIPT_DIR, "kfm_configs.json")
+
+
+def load_json(path: str, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def save_json(path: str, value) -> None:
+    # write a temporary file first, so a crash halfway never leaves a broken file behind
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(value, f)
+    os.replace(tmp, path)
+
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -32,8 +54,9 @@ class ConnectionManager:
         self.runs: dict = {}
         # wall time and coverage of the latest finished run per input, algorithm and hardware size
         self.scaling: dict = {}
-        # the k-th frequency moment's latest run per input size, k and hardware size (KFM_RESULT events)
-        self.kfm: dict = {}
+        # every run of the k-th frequency moment (KFM_RESULT events), saved to KFM_RUNS_FILE so they
+        # survive a restart of the dashboard; the view groups them by n, |Sigma|, k and hardware size
+        self.kfm: list = load_json(KFM_RUNS_FILE, [])
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -54,8 +77,8 @@ class ConnectionManager:
     def record_event(self, data: dict):
         if data.get('type') == 'KFM_RESULT':
             # a different problem than the circle runs: kept apart, so it never lands in their timeline
-            key = "|".join(str(data.get(k)) for k in ("size", "k", "unit", "parallel"))
-            self.kfm[key] = data
+            self.kfm.append({**data, "at": time.time()})
+            save_json(KFM_RUNS_FILE, self.kfm)
             return
         if data.get('type') == 'INIT':
             self.recorded_events = []
@@ -152,18 +175,19 @@ async def update_event(request: Request):
     return {"status": "ok"}
 
 ALGORITHMS = ("greedy", "theorem8", "alg5")   # the circle cover algorithms; "kfm" has its own analysis
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # The master UI listens on SPARK_MASTER_HOST when spark-env.sh sets SPARK_LOCAL_IP, so not on 127.0.0.1
 SPARK_MASTER_UI = f"http://{os.environ.get('SPARK_MASTER_HOST', '127.0.0.1')}:8080/json/"
 # Detect if we're on Pi cluster or local Windows/Mac
 IS_PI_CLUSTER = os.path.exists("/home/pi/spark-env/bin/python")
 
 
-def build_command(algorithm: str, job_size: str, t: int, parallel: Optional[int], moment: int = 2) -> List[str]:
+def build_command(algorithm: str, job_size: str, t: int, parallel: Optional[int], moment: int = 2,
+                  kfm_input: Optional[dict] = None) -> List[str]:
     """
     main.py runs every algorithm: greedy (threshold greedy, many rounds), theorem8 (Algorithms 6 + 7,
     two rounds), alg5 (Algorithm 5, 2t + 2 rounds) or kfm (the k-th frequency moment, k = moment).
     parallel is the number of Pis (cluster) or cores (local) to run on; None uses all of them.
+    kfm_input is the string for kfm: its length n, alphabet size and how many times to run it.
     """
     main_py_path = os.path.join(SCRIPT_DIR, "main.py")
     extra_args = ["--algorithm", algorithm]
@@ -171,6 +195,9 @@ def build_command(algorithm: str, job_size: str, t: int, parallel: Optional[int]
         extra_args += ["--t", str(t)]
     if algorithm == "kfm":
         extra_args += ["--moment", str(moment)]
+        if kfm_input:
+            extra_args += ["--length", str(kfm_input["n"]), "--alphabet", str(kfm_input["alphabet"]),
+                           "--repeats", str(kfm_input["repeats"])]
     if IS_PI_CLUSTER:
         # Pi cluster: use virtual env python and cluster mode
         cmd = ["/home/pi/spark-env/bin/python", main_py_path, "--cluster"]
@@ -184,8 +211,9 @@ def build_command(algorithm: str, job_size: str, t: int, parallel: Optional[int]
     return cmd + ["--ui-url", "http://127.0.0.1:8000", "--size", job_size] + extra_args
 
 
-def start_job(algorithm: str, job_size: str, t: int, parallel: Optional[int], moment: int = 2) -> subprocess.Popen:
-    cmd = build_command(algorithm, job_size, t, parallel, moment)
+def start_job(algorithm: str, job_size: str, t: int, parallel: Optional[int], moment: int = 2,
+              kfm_input: Optional[dict] = None) -> subprocess.Popen:
+    cmd = build_command(algorithm, job_size, t, parallel, moment, kfm_input)
     logger.info(f"Command: {' '.join(cmd)}")
     # Run as subprocess. Output goes to a log file: an unread PIPE fills up and stalls the job.
     log_path = os.path.join(SCRIPT_DIR, f"last_run_{algorithm}.log")
@@ -270,11 +298,12 @@ analysis = {"running": False, "kind": "circles", "algorithm": None, "size": None
 analysis_job: dict = {"task": None, "process": None}
 
 
-async def run_analysis(job_size: str, t: int, plan: List[Tuple[str, int]], moment: int = 2):
+async def run_analysis(job_size: str, t: int, plan: List[Tuple[str, int]], moment: int = 2,
+                       kfm_input: Optional[dict] = None):
     try:
         for algorithm, parallel in plan:
             analysis["current"] = {"algorithm": algorithm, "parallel": parallel, "started_at": time.time()}
-            process = start_job(algorithm, job_size, t, parallel, moment)
+            process = start_job(algorithm, job_size, t, parallel, moment, kfm_input)
             analysis_job["process"] = process
             while process.poll() is None:
                 await asyncio.sleep(1)
@@ -313,16 +342,69 @@ async def start_kfm_analysis(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    job_size, _, _ = parse_run_request(body)
     try:
         moment = max(1, min(10, int(body.get('k', 2))))
     except Exception:
         moment = 2
+    kfm_input = parse_kfm_input(body)
     plan = [("kfm", n) for n in parallel_ladder()]
-    analysis.update(running=True, kind="kfm", size=job_size, moment=moment, plan=plan, done=0, current=None,
-                    unit="pis" if IS_PI_CLUSTER else "cores")
-    analysis_job["task"] = asyncio.create_task(run_analysis(job_size, 2, plan, moment))
+    analysis.update(running=True, kind="kfm", size="custom", moment=moment, plan=plan, done=0, current=None,
+                    unit="pis" if IS_PI_CLUSTER else "cores", **kfm_input)
+    analysis_job["task"] = asyncio.create_task(run_analysis("small", 2, plan, moment, kfm_input))
     return {"status": "started", **analysis}
+
+
+KFM_MAX_N = 100_000_000   # longer strings take too long (and too much memory on the driver's check)
+
+
+def parse_kfm_input(body: dict) -> dict:
+    """The string to run the frequency moment on: length n, alphabet size |Sigma|, and runs per hardware size."""
+    def number(key, default, lo, hi):
+        try:
+            return max(lo, min(hi, int(body.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+    return {"n": number("n", 10_000_000, 1, KFM_MAX_N), "alphabet": number("alphabet", 1000, 1, 1_000_000_000),
+            "repeats": number("repeats", 1, 1, 20)}
+
+
+@app.get("/kfm/configs")
+async def get_kfm_configs():
+    """The custom inputs saved in the frequency moment view."""
+    return load_json(KFM_CONFIGS_FILE, [])
+
+
+@app.post("/kfm/configs")
+async def save_kfm_config(request: Request):
+    """Save a custom input (name, n, |Sigma|), or replace the one with the same name."""
+    body = await request.json()
+    name = str(body.get("name") or "").strip()[:60]
+    if not name:
+        return {"status": "error", "message": "A configuration needs a name"}
+    entry = {"name": name, **{k: v for k, v in parse_kfm_input(body).items() if k != "repeats"}}
+    configs = [c for c in load_json(KFM_CONFIGS_FILE, []) if c.get("name") != name] + [entry]
+    save_json(KFM_CONFIGS_FILE, configs)
+    return {"status": "saved", "configs": configs}
+
+
+@app.post("/kfm/configs/delete")
+async def delete_kfm_config(request: Request):
+    body = await request.json()
+    configs = [c for c in load_json(KFM_CONFIGS_FILE, []) if c.get("name") != body.get("name")]
+    save_json(KFM_CONFIGS_FILE, configs)
+    return {"status": "deleted", "configs": configs}
+
+
+@app.post("/kfm/runs/delete")
+async def delete_kfm_runs(request: Request):
+    """Forget the saved runs of one input (n, |Sigma|) and k."""
+    body = await request.json()
+    keep = [r for r in manager.kfm if not (r.get("n") == body.get("n") and r.get("alphabet") == body.get("alphabet")
+                                          and r.get("k") == body.get("k"))]
+    removed = len(manager.kfm) - len(keep)
+    manager.kfm[:] = keep
+    save_json(KFM_RUNS_FILE, manager.kfm)
+    return {"status": "deleted", "removed": removed}
 
 
 @app.post("/analysis/stop")
@@ -340,7 +422,7 @@ async def stop_analysis():
 async def get_analysis():
     """Progress of the full analysis, and the wall time of every finished run per hardware size."""
     return {**analysis, "now": time.time(), "results": list(manager.scaling.values()),
-            "kfm_results": list(manager.kfm.values())}
+            "kfm_results": manager.kfm}
 
 
 @app.get("/cluster-status")

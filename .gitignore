@@ -22,3 +22,6 @@ theory/
 old/
 spark-temp/
 checkpoints/
+kfm_runs.json
+kfm_configs.json
+*.json.tmp

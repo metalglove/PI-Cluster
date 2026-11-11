@@ -228,8 +228,8 @@
                     <h2>k-th frequency moment: speedup with more <span class="kfm-unit">Pis</span></h2>
                     <p class="hint">f<sub>k</sub>(x) = Σ<sub>s ∈ Σ</sub> |{i ∈ [n] : x<sub>i</sub> = s}|<sup>k</sup>: for every
                         symbol, count how often it occurs in the string x, raise the count to the power k, and add them up.
-                        Exact, in 2 MapReduce rounds. The same string runs on 1, 2, … all <span class="kfm-unit">Pis</span>:
-                        the answer never changes, only the wall time.</p>
+                        Exact, in 2 MapReduce rounds. The same string runs on 1, 2, … all <span class="kfm-unit">Pis</span>,
+                        several times each: the answer never changes, only the wall time. Every run is saved.</p>
                 </div>
                 <button class="btn" id="kfmClose">Close (Esc)</button>
             </div>
@@ -244,24 +244,39 @@
                 </aside>
                 <section class="kfm-main">
                     <div class="kfm-controls">
-                        <div class="segmented" role="radiogroup" aria-label="Length n of the string">
-                            <label><input type="radio" name="kfmSize" value="small"><span>n = 1M</span></label>
-                            <label><input type="radio" name="kfmSize" value="medium" checked><span>n = 10M</span></label>
-                            <label><input type="radio" name="kfmSize" value="large"><span>n = 30M</span></label>
-                        </div>
+                        <label class="t-picker">Input
+                            <select id="kfmPreset" aria-label="Which string to run on"></select>
+                        </label>
+                        <label class="t-picker">n =
+                            <input id="kfmN" type="number" min="1" max="100000000" step="1" inputmode="numeric" aria-label="Length n of the string">
+                        </label>
+                        <label class="t-picker">|Σ| =
+                            <input id="kfmAlphabet" type="number" min="1" step="1" inputmode="numeric" aria-label="Alphabet size">
+                        </label>
                         <label class="t-picker">k =
                             <select id="kfmK" aria-label="Which frequency moment k">
                                 <option>1</option><option selected>2</option><option>3</option><option>4</option>
                             </select>
                         </label>
-                        <button class="btn btn-primary" id="kfmRun">Run on 1, 2, … all Pis</button>
+                        <label class="t-picker">runs per size
+                            <select id="kfmRepeats" aria-label="How many runs per number of Pis">
+                                <option>1</option><option>2</option><option>3</option><option selected>5</option><option>10</option>
+                            </select>
+                        </label>
                     </div>
+                    <div class="kfm-controls">
+                        <button class="btn btn-primary" id="kfmRun">Run on 1, 2, … all Pis</button>
+                        <button class="btn" id="kfmSave" title="Save n and |Σ| under a name, to pick it again later">Save input</button>
+                        <button class="btn" id="kfmForget" hidden>Delete saved input</button>
+                        <button class="btn" id="kfmClear" title="Forget the saved runs of this input and k">Clear runs</button>
+                    </div>
+                    <p class="hint kfm-preset-note" id="kfmPresetNote"></p>
                     <div class="kfm-queue" id="kfmQueue" hidden aria-live="polite"></div>
                     <p class="hint" id="kfmLede"></p>
                     <div class="scaling-headline" id="kfmHeadline"></div>
                     <div class="kfm-results">
                         <div class="kfm-bars" id="kfmBars" aria-label="Wall time per number of Pis, split into stages"></div>
-                        <canvas class="scaling-chart" id="kfmChart" hidden aria-label="Speedup against the number of Pis"></canvas>
+                        <canvas class="scaling-chart" id="kfmChart" hidden aria-label="Wall time of every run per number of Pis, as box plots"></canvas>
                     </div>
                     <div class="scaling-scroll"><table class="scaling-table" id="kfmTable"></table></div>
                     <p class="hint scaling-why" id="kfmWhy"></p>
