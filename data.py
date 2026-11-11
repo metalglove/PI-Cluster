@@ -118,9 +118,32 @@ def generate_circles(
 
 
 
-def generate_dataset(size: str) -> Tuple[List[Point], List[Circle]]:
-    """The points and circles for a dataset size (small, medium or large)."""
-    config = SIZE_CONFIGS[size]
+def dataset_config(size: str, n_points: Optional[int] = None, n_circles: Optional[int] = None,
+                   n_clusters: Optional[int] = None) -> dict:
+    """
+    The numbers of points, circles and clusters for a dataset size (small, medium or large),
+    with any of them replaced by a custom number. The same numbers always give the same data.
+    """
+    config = dict(SIZE_CONFIGS[size])
+    if n_points:
+        config["N_POINTS"] = n_points
+    if n_circles:
+        config["N_CIRCLES"] = n_circles
+    if n_clusters:
+        config["N_CLUSTERS"] = n_clusters
+    # every cluster needs at least one point
+    config["N_CLUSTERS"] = max(1, min(config["N_CLUSTERS"], config["N_POINTS"]))
+    return config
+
+
+def preset_name(config: dict) -> Optional[str]:
+    """The dataset size whose numbers these are (small, medium or large), or None for a custom input."""
+    return next((name for name, c in SIZE_CONFIGS.items() if c == config), None)
+
+
+def generate_dataset(size: str, config: Optional[dict] = None) -> Tuple[List[Point], List[Circle]]:
+    """The points and circles for a dataset size (small, medium or large), or for a custom config from dataset_config."""
+    config = config or SIZE_CONFIGS[size]
     points = generate_clustered_points(config["N_POINTS"], config["N_CLUSTERS"], BOUNDS,
                                        cluster_std=CLUSTER_STD, seed=SEED)
     circles = generate_circles(config["N_CIRCLES"], BOUNDS, RADIUS_RANGE, seed=SEED + 1)

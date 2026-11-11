@@ -475,6 +475,23 @@ function schedule() {
 
 function setPlaying(p) { playing = p; schedule(); }
 
+// Play a saved run (its events) in the main view, from the start, as if it were running now
+let loadedRun = false;   // true while the main view shows a saved run instead of the live one
+function loadTimeline(events) {
+    clearTimeout(timer);
+    timer = null;
+    timeline = events.slice();
+    if (timeline[timeline.length - 1].type !== 'FINISHED') timeline.push({ type: 'FINISHED' });
+    cursor = -1;
+    state = emptyState();
+    replaying = false;
+    loadedRun = true;
+    playing = true;
+    renderPanels();
+    schedule();
+    renderRunButton();
+}
+
 function receive(e) {
     if (e.type === 'REPLAY_DONE') {
         replaying = false;
@@ -541,15 +558,18 @@ function shownAlgorithm() {
 }
 
 let renderedCode = null;
+let syncedConfig = null;   // the run whose input the header pickers were last set to
 function renderCode(algorithm) {
     // Keep the switch on the algorithm being shown, so the header never contradicts the page.
     if (state.config) {
         document.querySelector(`input[name="algorithm"][value="${algorithm}"]`).checked = true;
         if (state.t) $('tSelect').value = String(state.t);
-        // and the size picker on the input being shown (dataset is "size/seed/std")
-        const size = (state.config.dataset || '').split('/')[0];
-        const sizeInput = document.querySelector(`input[name="jobSize"][value="${size}"]`);
-        if (sizeInput) sizeInput.checked = true;
+        // and the input pickers on the input being shown, once per run, so they can be changed while it plays
+        const inp = state.config.input;
+        if (inp && syncedConfig !== state.config) {
+            syncedConfig = state.config;
+            if (!sameCircleInput(inp, headerInput())) setHeaderInput(inp);
+        }
         renderTPicker();
     }
     const t = state.config ? state.t : selectedT();
@@ -1201,9 +1221,28 @@ function hardwareText(config) {
 async function showCompare(on) {
     $('compareView').hidden = !on;
     if (!on) return;
+    await refreshAnalysis();
+    // Opening the view shows the newest saved result, unless an analysis is running or was just run
+    if (!followsAnalysis() && !inputTouched) {
+        const latest = circleSavedResults()[0];
+        if (latest) loadSavedResult(latest);
+    }
+    await renderCompareColumns();
+    renderScaling();
+}
+
+let compareSeq = 0;   // only the newest request's columns are drawn
+async function renderCompareColumns() {
+    const seq = ++compareSeq;
+    const inp = shownInput();
     let runs = {};
-    try { runs = await (await fetch('/runs')).json(); } catch (e) { /* shown as missing below */ }
-    const summaries = Object.fromEntries(Object.keys(ALGORITHMS).map(a => [a, runs[a] ? summarizeRun(runs[a]) : null]));
+    try {
+        const query = new URLSearchParams({ ...inp, t: analysis.running && followsAnalysis() ? analysis.t : selectedT() });
+        runs = await (await fetch(`/runs?${query}`, { cache: 'no-store' })).json();
+    } catch (e) { /* shown as missing below */ }
+    if (seq !== compareSeq) return;
+    const summaries = Object.fromEntries(Object.keys(ALGORITHMS).map(a => [a, runs[a] ? summarizeRun(runs[a].events) : null]));
+    Object.keys(summaries).forEach(a => { if (summaries[a]) summaries[a].id = runs[a].id; });
     const slots = Math.max(1, ...Object.values(summaries).filter(Boolean)
         .map(r => r.events.filter(e => e.type === 'ROUND').length));
 
@@ -1211,7 +1250,7 @@ async function showCompare(on) {
         const r = summaries[a];
         if (!r) {
             return `<div class="cv-col"><h3>${ALGORITHMS[a].title}</h3>
-                <p class="cv-empty">No finished run yet. Pick “${ALGORITHMS[a].name}” and press Run on cluster.</p></div>`;
+                <p class="cv-empty">No saved run on this input yet. Pick “${ALGORITHMS[a].name}” and press Run on cluster.</p></div>`;
         }
         const pct = r.final.coverage_percentage;
         const time = r.final.elapsed_s != null ? `${fmt(Math.round(r.final.elapsed_s))} s` : '–';
@@ -1228,6 +1267,7 @@ async function showCompare(on) {
                 <div><dt>Most on one machine</dt><dd>${fmt(r.maxLoad)}</dd></div>
             </dl>
             <canvas class="cv-strip" id="cvStrip-${a}"></canvas>
+            ${r.id ? `<button class="btn cv-replay" data-run="${r.id}" title="Play this run again in the main view, round by round">Play this run</button>` : ''}
         </div>`;
     }).join('');
 
@@ -1253,8 +1293,18 @@ async function showCompare(on) {
         drawMiniFigure($(`cvFig-${a}`), r);
         drawStrip($(`cvStrip-${a}`), r.events, r.events.length, { slots });
     }
-    await refreshAnalysis();
 }
+
+// A saved run, played again in the main view (until a new run starts)
+$('cvCols').addEventListener('click', async e => {
+    const b = e.target.closest('button[data-run]');
+    if (!b) return;
+    let events = [];
+    try { events = await (await fetch(`/runs/${encodeURIComponent(b.dataset.run)}`)).json(); } catch (err) { return; }
+    if (!events.length) return;
+    loadTimeline(events);
+    showCompare(false);
+});
 
 // --- Speedup: the same run on more Pis (or cores) ---
 // m, the number of machines (partitions), depends only on the input, so every hardware size gives the
@@ -1297,9 +1347,10 @@ function renderAnalysisButton() {
     btn.classList.toggle('btn-primary', analysis.running);
     btn.disabled = !wsOpen || (!analysis.running && runInProgress());
     // While the analysis runs it picks the algorithm, size and hardware itself: only Stop stays usable
-    document.querySelectorAll('input[name="algorithm"], input[name="jobSize"], #tSelect, #hwSelect')
+    document.querySelectorAll('input[name="algorithm"], #tSelect, #hwSelect, #inputBar select, #inputBar input, #inputBar button, ' +
+                              '#cvSaved, #cvRepeats, #cvClear, #suSaved, #suRepeats, #suClear')
         .forEach(el => { el.disabled = analysis.running; });
-    document.querySelectorAll('.run-block .segmented, #tPicker, #hwPicker')
+    document.querySelectorAll('.run-block .segmented, #tPicker, #hwPicker, #inputBar')
         .forEach(el => el.classList.toggle('locked', analysis.running));
     renderAnalysisQueue();
 }
@@ -1310,14 +1361,18 @@ function renderAnalysisQueue() {
     q.hidden = !analysis.running;
     if (!analysis.running) return;
     const unit = analysis.unit || 'pis';
-    const timeOf = (a, n) => a === 'kfm'
-        ? kfmRunOf({ n: analysis.n, alphabet: analysis.alphabet, k: analysis.moment }, unit, n)
-        : (analysis.results || []).find(r => r.algorithm === a && r.parallel === n && r.unit === unit &&
-            (r.dataset || '').startsWith(analysis.size + '/') && (a !== 'alg5' || r.t === analysis.t));
-    const items = analysis.plan.map(([a, n], i) => {
-        const label = `${planName(a)} · ${n} ${unitName(unit, n)}`;
+    const repeats = analysis.kind === 'kfm' ? 1 : analysis.repeats || 1;
+    const timeOf = (a, n) => {
+        if (a === 'kfm') return kfmRunOf({ n: analysis.n, alphabet: analysis.alphabet, k: analysis.moment }, unit, n);
+        const runs = (analysis.results || []).filter(r => r.algorithm === a && r.parallel === n && r.unit === unit &&
+            sameCircleInput(r.input, analysis.input) && (a !== 'alg5' || r.t === analysis.t));
+        return runs.length ? medianRun(runs) : null;
+    };
+    const items = analysis.plan.map(([a, n, rep], i) => {
+        const label = `${planName(a)} · ${n} ${unitName(unit, n)}${repeats > 1 ? ` · run ${rep}` : ''}`;
         if (i < analysis.done) {
-            const r = timeOf(a, n);
+            // with several runs per size, the last one shows the median of them
+            const r = repeats > 1 && rep !== repeats ? null : timeOf(a, n);
             return `<span class="aq-item done">${label}${r ? ` · ${fmtS(r.elapsed_s)}` : ''}</span>`;
         }
         if (i === analysis.done) {
@@ -1328,8 +1383,8 @@ function renderAnalysisQueue() {
     });
     const title = analysis.kind === 'kfm' ? `Frequency moment, n = ${shortCount(analysis.n)}, |Σ| = ${shortCount(analysis.alphabet)}, ` +
         `k = ${analysis.moment}, ${analysis.repeats} run${analysis.repeats === 1 ? '' : 's'} each:`
-        : analysis.kind === 'speedup' ? `Speedup, ${planName(analysis.algorithm)}, ${analysis.size}:`
-        : `Full analysis, ${analysis.size}:`;
+        : analysis.kind === 'speedup' ? `Speedup, ${planName(analysis.algorithm)}, ${inputLabel(analysis.input)}:`
+        : `Full analysis, ${inputLabel(analysis.input)}:`;
     q.innerHTML = `<span class="aq-title">${title}</span>${items.join('')}`;
     if (analysis.kind === 'kfm') {
         $('kfmQueue').innerHTML = items.join('');
@@ -1344,11 +1399,11 @@ $('analysisBtn').addEventListener('click', async () => {
         if (analysis.running) {
             await fetch('/analysis/stop', { method: 'POST' });
         } else {
-            const size = document.querySelector('input[name="jobSize"]:checked').value;
+            inputTouched = false;
             await fetch('/analysis', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ size, t: selectedT() })
+                body: JSON.stringify({ ...inputRequest(), t: selectedT(), repeats: circleRepeats() })
             });
         }
     } catch (e) {
@@ -1369,29 +1424,239 @@ function renderHwPicker() {
 }
 $('hwSelect').addEventListener('change', () => { hwTouched = true; });
 
-// The finished runs to compare: the dataset size picked in the header, and the t picked for Algorithm 5.
-let sizeTouched = false;   // after the user picks a size, show that one instead of the last analysis'
-document.querySelectorAll('input[name="jobSize"]').forEach(r => r.addEventListener('change', () => {
-    sizeTouched = true;
-    if (!$('compareView').hidden) renderScaling();
+// --- The input of the circle cover algorithms: points, circles, clusters and k ---
+// The fixed inputs (small, medium, large), the inputs saved under a name and the numbers of points to pick
+// from come from viz_server (/circle/configs). viz_server saves every finished run under its input's numbers.
+let circleConfigs = {
+    presets: [{ id: 'small', points: 2000, circles: 500, clusters: 8, k: 10 },
+              { id: 'medium', points: 25000, circles: 2000, clusters: 20, k: 10 },
+              { id: 'large', points: 100000, circles: 5000, clusters: 50, k: 10 }],
+    saved: [], points: [2000, 10000, 25000, 100000, 500000, 1000000, 10000000],
+    max: { circles: 100000, clusters: 10000, k: 100 }
+};
+const INPUT_KEYS = ['points', 'circles', 'clusters', 'k'];
+const PRESET_LABEL = { small: 'Small', medium: 'Medium', large: 'Large' };
+const sameCircleInput = (a, b) => !!a && !!b && INPUT_KEYS.every(key => a[key] === b[key]);
+const inputKey = inp => INPUT_KEYS.map(key => inp[key]).join('|');
+const escapeAttr = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+let inputTouched = false;   // after the user picks an input, the views show that one instead of the last analysis'
+
+const circleField = (id, max) => Math.max(1, Math.min(max, Math.round(Number($(id).value) || 1)));
+// The input picked in the header
+function headerInput() {
+    const points = Number($('ciPoints').value) || circleConfigs.presets[0].points;
+    return { points, circles: circleField('ciCircles', circleConfigs.max.circles),
+             clusters: circleField('ciClusters', Math.min(points, circleConfigs.max.clusters)),
+             k: circleField('ciK', circleConfigs.max.k) };
+}
+// What a run request sends: the numbers, and the name of a fixed input (or custom)
+function inputRequest() {
+    const inp = headerInput();
+    const p = circleConfigs.presets.find(p => sameCircleInput(p, inp));
+    return { size: p ? p.id : 'custom', ...inp };
+}
+// The fixed or saved input these numbers are, or custom
+function inputMatch(inp) {
+    const p = circleConfigs.presets.find(p => sameCircleInput(p, inp));
+    if (p) return { value: p.id, preset: p };
+    const c = circleConfigs.saved.find(c => sameCircleInput(c, inp));
+    return c ? { value: `saved:${c.name}`, saved: c } : { value: 'custom' };
+}
+function inputLabel(inp) {
+    if (!inp) return '';
+    const nums = `${shortCount(inp.points)} points, ${fmt(inp.circles)} circles, ${fmt(inp.clusters)} clusters, k = ${inp.k}`;
+    const m = inputMatch(inp);
+    return m.preset ? `${PRESET_LABEL[m.preset.id] || m.preset.id}: ${nums}` : m.saved ? `${m.saved.name}: ${nums}` : nums;
+}
+function renderInputOptions() {
+    $('ciPreset').innerHTML = circleConfigs.presets.map(p => `<option value="${p.id}">${PRESET_LABEL[p.id] || p.id}: ` +
+        `${shortCount(p.points)} points, ${fmt(p.circles)} circles</option>`).join('') +
+        circleConfigs.saved.map(c => `<option value="saved:${escapeAttr(c.name)}">Saved: ${escapeAttr(c.name)}</option>`).join('') +
+        '<option value="custom">Custom</option>';
+    const current = $('ciPoints').value;
+    $('ciPoints').innerHTML = circleConfigs.points.map(n => `<option value="${n}">${shortCount(n)}</option>`).join('');
+    if (current) setPointsOption(Number(current));
+    $('ciCircles').max = circleConfigs.max.circles;
+    $('ciClusters').max = circleConfigs.max.clusters;
+    $('ciK').max = circleConfigs.max.k;
+}
+function setPointsOption(n) {
+    // a run started from the command line can have a number of points the list does not offer
+    if (![...$('ciPoints').options].some(o => Number(o.value) === n)) {
+        $('ciPoints').insertAdjacentHTML('beforeend', `<option value="${n}">${shortCount(n)}</option>`);
+    }
+    $('ciPoints').value = String(n);
+}
+function setHeaderInput(inp) {
+    setPointsOption(inp.points);
+    $('ciCircles').value = String(inp.circles);
+    $('ciClusters').value = String(inp.clusters);
+    $('ciK').value = String(inp.k);
+    renderInputBar();
+}
+function renderInputBar() {
+    const m = inputMatch(headerInput());
+    $('ciPreset').value = m.value;
+    $('ciForget').hidden = !m.saved;
+}
+async function loadCircleConfigs() {
+    try { circleConfigs = await (await fetch('/circle/configs', { cache: 'no-store' })).json(); } catch (e) { return; }
+    const inp = headerInput();
+    renderInputOptions();
+    setHeaderInput(inp);
+}
+// The input was changed in the header: the open views follow it
+function inputChanged() {
+    inputTouched = true;
+    renderInputBar();
+    if (!$('compareView').hidden) { renderCompareColumns(); renderScaling(); }
     if (!$('speedupView').hidden) renderSpeedup();
+}
+$('ciPreset').addEventListener('change', () => {
+    const v = $('ciPreset').value;
+    const p = circleConfigs.presets.find(p => p.id === v), c = circleConfigs.saved.find(c => `saved:${c.name}` === v);
+    if (p || c) setHeaderInput(p || c);
+    inputChanged();
+});
+['ciPoints', 'ciCircles', 'ciClusters', 'ciK'].forEach(id => $(id).addEventListener('change', () => {
+    if (id !== 'ciPoints') $(id).value = String(headerInput()[id.slice(2).toLowerCase()]);   // within the limits
+    inputChanged();
+}));
+$('ciSave').addEventListener('click', async () => {
+    const inp = headerInput();
+    const name = prompt(`Name for this input (${inputLabel(inp)}):`);
+    if (!name || !name.trim()) return;
+    try {
+        const reply = await (await fetch('/circle/configs', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim(), ...inp })
+        })).json();
+        if (reply.saved) { circleConfigs.saved = reply.saved; renderInputOptions(); }
+    } catch (e) { console.error('Saving the input failed', e); }
+    renderInputBar();
+});
+$('ciForget').addEventListener('click', async () => {
+    const m = inputMatch(headerInput());
+    if (!m.saved || !confirm(`Delete the saved input “${m.saved.name}”? Its runs stay.`)) return;
+    try {
+        const reply = await (await fetch('/circle/configs/delete', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: m.saved.name })
+        })).json();
+        if (reply.saved) { circleConfigs.saved = reply.saved; renderInputOptions(); }
+    } catch (e) { console.error('Deleting the input failed', e); }
+    renderInputBar();
+});
+
+// Runs per hardware size in a full analysis or speedup run; the two views' pickers are the same setting
+const circleRepeats = () => Number($('suRepeats').value) || 1;
+['cvRepeats', 'suRepeats'].forEach(id => $(id).addEventListener('change', () => {
+    $('cvRepeats').value = $('suRepeats').value = $(id).value;
 }));
 
+// The views show the running (or just finished) analysis' input until the user picks another one
+const followsAnalysis = () => !!analysis.input && (analysis.kind === 'circles' || analysis.kind === 'speedup') &&
+    (analysis.running || !inputTouched);
+function shownInput() {
+    if (followsAnalysis()) {
+        if (!sameCircleInput(analysis.input, headerInput())) setHeaderInput(analysis.input);
+        return analysis.input;
+    }
+    return headerInput();
+}
+
+// Every input and hardware kind with saved runs, newest first: an analysis that already ran, to show again
+// without running it (viz_server keeps every run in circle_runs.json and its events in circle_runs/)
+const SHORT_NAME = { greedy: 'greedy', theorem8: 'Thm 8', alg5: 'Alg 5' };
+function circleSavedResults() {
+    const by = new Map();
+    (analysis.results || []).filter(r => r.input && r.parallel).forEach(r => {
+        const key = `${inputKey(r.input)}|${r.unit}`;
+        const e = by.get(key) || { key, input: r.input, unit: r.unit, algorithms: new Set(), sizes: new Set(),
+                                   runs: 0, at: 0, t: null, tAt: -1 };
+        e.algorithms.add(r.algorithm);
+        e.sizes.add(r.parallel);
+        e.runs += 1;
+        e.at = Math.max(e.at, r.at || 0);
+        if (r.algorithm === 'alg5' && (r.at || 0) >= e.tAt) { e.t = r.t; e.tAt = r.at || 0; }
+        by.set(key, e);
+    });
+    return [...by.values()].sort((a, b) => b.at - a.at);
+}
+function renderSavedSelect(id, only = null) {
+    const saved = circleSavedResults().filter(e => !only || e.algorithms.has(only));
+    const when = t => t ? new Date(t * 1000).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+    const inp = shownInput();
+    const current = saved.find(e => sameCircleInput(e.input, inp));
+    $(id).innerHTML = !saved.length ? '<option value="">none yet</option>' : (current ? '' : '<option value="">—</option>') +
+        saved.map(e => {
+            const sizes = [...e.sizes].sort((a, b) => a - b);
+            const hwRange = sizes.length > 1 ? `${sizes[0]}–${sizes[sizes.length - 1]}` : `${sizes[0]}`;
+            const algs = Object.keys(ALGORITHMS).filter(a => e.algorithms.has(a)).map(a => SHORT_NAME[a]).join(', ');
+            return `<option value="${escapeAttr(e.key)}">${escapeAttr(inputLabel(e.input))} · ${algs} · ${hwRange} ` +
+                `${e.unit === 'pis' ? 'Pis' : 'cores'}, ${e.runs} run${e.runs === 1 ? '' : 's'} · ${when(e.at)}</option>`;
+        }).join('');
+    $(id).value = current ? current.key : '';
+}
+function loadSavedResult(e) {
+    setHeaderInput(e.input);
+    if (e.t) $('tSelect').value = String(e.t);
+    inputTouched = true;
+}
+$('cvSaved').addEventListener('change', () => {
+    const e = circleSavedResults().find(e => e.key === $('cvSaved').value);
+    if (e) { loadSavedResult(e); renderCompareColumns(); renderScaling(); }
+});
+$('suSaved').addEventListener('change', () => {
+    const e = circleSavedResults().find(e => e.key === $('suSaved').value);
+    if (e) { loadSavedResult(e); renderSpeedup(); }
+});
+async function clearCircleRuns(body, question) {
+    if (!confirm(question)) return;
+    try {
+        await fetch('/circle/runs/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    } catch (e) { console.error('Clearing the runs failed', e); }
+    await refreshAnalysis();
+}
+$('cvClear').addEventListener('click', async () => {
+    const inp = shownInput();
+    await clearCircleRuns(inp, `Forget every saved run of every algorithm on ${inputLabel(inp)}?`);
+    renderCompareColumns();
+    renderScaling();
+});
+$('suClear').addEventListener('click', async () => {
+    const inp = shownInput(), a = speedupAlgorithm(), t = selectedT();
+    await clearCircleRuns({ ...inp, algorithm: a, t },
+        `Forget every saved run of ${ALGORITHMS[a].name}${a === 'alg5' ? ` (t = ${t})` : ''} on ${inputLabel(inp)}?`);
+    renderSpeedup();
+});
+
+// The runs of one algorithm on one hardware size: the median run stands for them, with every wall time kept
+function medianRun(list) {
+    const sorted = [...list].sort((a, b) => a.elapsed_s - b.elapsed_s);
+    const times = sorted.map(r => r.elapsed_s);
+    return { ...sorted[(sorted.length - 1) >> 1], elapsed_s: median(times), times, runs: sorted.length };
+}
+
+// The finished runs to compare: the input picked in the header, and the t picked for Algorithm 5.
 function scalingRows() {
-    const size = analysis.size && (analysis.running || !sizeTouched) ? analysis.size
-        : document.querySelector('input[name="jobSize"]:checked').value;
-    const t = analysis.running ? analysis.t : selectedT();
+    const inp = shownInput();
+    const t = analysis.running && followsAnalysis() ? analysis.t : selectedT();
     const runs = (analysis.results || []).filter(r =>
-        (r.dataset || '').startsWith(size + '/') && (r.algorithm !== 'alg5' || r.t === t));
+        sameCircleInput(r.input, inp) && (r.algorithm !== 'alg5' || r.t === t));
     const unit = runs.some(r => r.unit === 'pis') ? 'pis' : 'cores';
     const mine = runs.filter(r => r.unit === unit);
     const sizes = [...new Set(mine.map(r => r.parallel))].sort((a, b) => a - b);
     const rows = Object.keys(ALGORITHMS).map(a => {
-        const byN = new Map(mine.filter(r => r.algorithm === a).map(r => [r.parallel, r]));
+        const lists = new Map();
+        mine.filter(r => r.algorithm === a).forEach(r => {
+            if (!lists.has(r.parallel)) lists.set(r.parallel, []);
+            lists.get(r.parallel).push(r);
+        });
+        const byN = new Map([...lists.entries()].map(([n, list]) => [n, medianRun(list)]));
         const base = sizes.map(n => byN.get(n)).find(Boolean);
         return { algorithm: a, byN, base, rounds: base ? base.rounds : null };
     }).filter(r => r.byN.size);
-    return { size, t, unit, sizes, rows };
+    return { size: inputLabel(inp), t, unit, sizes, rows };
 }
 
 // The Compare view's section shows every algorithm; the Speedup view (only = one algorithm) just that one.
@@ -1404,6 +1669,7 @@ const SPEEDUP_SCALING = { title: 'suTitle', lede: 'suLede', progress: 'suProgres
 function renderScaling(V = COMPARE_SCALING, only = null) {
     const { size, t, unit, sizes: allSizes, rows: allRows } = scalingRows();
     const rows = only ? allRows.filter(r => r.algorithm === only) : allRows;
+    if (V === COMPARE_SCALING) renderSavedSelect('cvSaved');
     const sizes = only ? allSizes.filter(n => rows.some(r => r.byN.has(n))) : allSizes;
     const U = unit === 'pis' ? 'Pis' : 'cores';
     $(V.title).textContent = only ? `${ALGORITHMS[only].name}${only === 'alg5' ? `, t = ${t}` : ''}: speedup with more ${U}`
@@ -1417,9 +1683,9 @@ function renderScaling(V = COMPARE_SCALING, only = null) {
     $(V.progress).hidden = !progress;
 
     if (!rows.length) {
-        $(V.lede).textContent = only ? `No timed runs of ${ALGORITHMS[only].name} on the ${size} dataset yet. ` +
+        $(V.lede).textContent = only ? `No saved runs of ${ALGORITHMS[only].name} on this input (${size}) yet. ` +
             `Press Run to run it on 1, 2, … all ${U}.`
-            : `No timed runs on the ${size} dataset yet. Press Full analysis to run every ` +
+            : `No saved runs on this input (${size}) yet. Press Full analysis to run every ` +
             `algorithm on 1, 2, … all ${U}, or pick a number in the header and run one.`;
         [V.headline, V.bars, V.table, V.why].forEach(id => { $(id).innerHTML = ''; });
         $(V.chart).hidden = true;
@@ -1434,8 +1700,10 @@ function renderScaling(V = COMPARE_SCALING, only = null) {
         const work = Math.min(run.work_s ?? run.elapsed_s, run.elapsed_s);
         return { work, coord: run.elapsed_s - work, share: (run.elapsed_s - work) / run.elapsed_s };
     };
+    const repeated = rows.some(r => [...r.byN.values()].some(x => x.runs > 1));
     $(V.lede).textContent = `The same input (${size}) on ${sizes.map(hw).join(', ')}. ` +
-        `Wall time is the algorithm itself, from its first Spark job to its answer, without starting Spark.`;
+        `Wall time is the algorithm itself, from its first Spark job to its answer, without starting Spark.` +
+        (repeated ? ' With several runs on one hardware size, bars and table show the median run.' : '');
 
     // Headline: what more hardware bought each algorithm, and the MapReduce algorithms against greedy
     const greedy = rows.find(r => r.algorithm === 'greedy');
@@ -1467,7 +1735,8 @@ function renderScaling(V = COMPARE_SCALING, only = null) {
                 const run = r.byN.get(n);
                 const speedup = r.base.elapsed_s / run.elapsed_s;
                 const { work, coord, share } = split(run);
-                return `<div class="sb-row" title="${nameOf(r)} on ${hw(n)}: ${run.elapsed_s.toFixed(1)} s in ${fmt(r.rounds)} rounds, ` +
+                return `<div class="sb-row" title="${nameOf(r)} on ${hw(n)}: ${run.elapsed_s.toFixed(1)} s in ${fmt(r.rounds)} rounds` +
+                    (run.runs > 1 ? ` (median of ${run.runs} runs, ${run.times[0].toFixed(1)}–${run.times[run.times.length - 1].toFixed(1)} s)` : '') + `, ` +
                     `${speedup.toFixed(2)}× the speed on ${hw(r.base.parallel)}. About ${fmtS(work)} of work on the machines and ` +
                     `${fmtS(coord)} of coordination (${Math.round(100 * share)}%), ${(coord / Math.max(1, r.rounds)).toFixed(1)} s per round.">
                     <span class="sb-hw">${hw(n)}</span>
@@ -1488,7 +1757,8 @@ function renderScaling(V = COMPARE_SCALING, only = null) {
             if (!run) return `<td>–</td>`;
             const speedup = r.base.elapsed_s / run.elapsed_s;
             const efficiency = speedup / (n / r.base.parallel);
-            return `<td>${run.elapsed_s.toFixed(1)} s<br><small>${speedup.toFixed(2)}× · ${Math.round(100 * efficiency)}% eff.</small></td>`;
+            return `<td>${run.elapsed_s.toFixed(1)} s<br><small>${speedup.toFixed(2)}× · ${Math.round(100 * efficiency)}% eff.</small>` +
+                (run.runs > 1 ? `<br><small>${run.runs} runs, ${run.times[0].toFixed(1)}–${run.times[run.times.length - 1].toFixed(1)} s</small>` : '') + `</td>`;
         }).join('');
         const covs = [...new Set([...r.byN.values()].map(x => x.coverage))];
         const cov = covs.length === 1 ? fmt(covs[0]) : `<span class="warn">differs: ${covs.map(fmt).join(' / ')}</span>`;
@@ -1575,6 +1845,11 @@ async function showSpeedup(on) {
     $('speedupView').hidden = !on;
     if (!on) return;
     await refreshAnalysis();
+    // Opening the view shows the newest saved result of the selected algorithm, unless an analysis is running or was just run
+    if (!followsAnalysis() && !inputTouched) {
+        const latest = circleSavedResults().find(e => e.algorithms.has(selectedAlgorithm()));
+        if (latest) loadSavedResult(latest);
+    }
     renderSpeedup();
 }
 
@@ -1586,6 +1861,16 @@ function renderSpeedup() {
     btn.disabled = !wsOpen || (analysis.running && !mineRunning) || (!analysis.running && runInProgress());
     $('suQueue').hidden = !mineRunning;
     renderScaling(SPEEDUP_SCALING, speedupAlgorithm());
+    renderSavedSelect('suSaved', speedupAlgorithm());
+    // with several runs per hardware size: every run's wall time, as box plots
+    const { unit, sizes, rows } = scalingRows();
+    const row = rows.find(r => r.algorithm === speedupAlgorithm());
+    const repeated = row && [...row.byN.values()].some(x => x.runs > 1);
+    $('suBoxes').hidden = !repeated;
+    if (repeated) {
+        drawKfmBoxes($('suBoxes'), unit, sizes.filter(n => row.byN.has(n))
+            .map(n => ({ parallel: n, times: row.byN.get(n).times, med: row.byN.get(n).elapsed_s })));
+    }
 }
 
 $('speedupBtn').addEventListener('click', () => showSpeedup(true));
@@ -1599,12 +1884,12 @@ $('suRun').addEventListener('click', async () => {
         if (analysis.running) {
             await fetch('/analysis/stop', { method: 'POST' });
         } else {
-            sizeTouched = false;
+            inputTouched = false;
             await fetch('/analysis', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ size: document.querySelector('input[name="jobSize"]:checked').value,
-                    t: selectedT(), algorithm: selectedAlgorithm() })
+                body: JSON.stringify({ ...inputRequest(), t: selectedT(), algorithm: selectedAlgorithm(),
+                                       repeats: circleRepeats() })
             });
         }
     } catch (e) {
@@ -2115,11 +2400,10 @@ $('runBtn').addEventListener('click', async () => {
     submitting = true;
     renderRunButton();
     try {
-        const size = document.querySelector('input[name="jobSize"]:checked').value;
         const res = await fetch('/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ size, algorithm: selectedAlgorithm(), t: selectedT(),
+            body: JSON.stringify({ ...inputRequest(), algorithm: selectedAlgorithm(), t: selectedT(),
                                    parallel: Number($('hwSelect').value) || null })
         });
         const data = await res.json();
@@ -2136,6 +2420,7 @@ function connect() {
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.onopen = () => {
         wsOpen = true;
+        loadedRun = false;
         timeline = [];
         cursor = -1;
         state = emptyState();
@@ -2147,6 +2432,18 @@ function connect() {
         const e = JSON.parse(ev.data);
         // the frequency moment is not a circle run: it only feeds its own view, never the timeline
         if (e.type === 'KFM_RESULT') { refreshAnalysis(); return; }
+        if (loadedRun && e.type !== 'REPLAY_DONE') {
+            // a new run is going: leave the saved run and show the live one from its start
+            loadedRun = false;
+            clearTimeout(timer);
+            timer = null;
+            timeline = [];
+            cursor = -1;
+            state = emptyState();
+            replaying = true;
+            ws.send(JSON.stringify({ action: 'replay' }));
+            return;
+        }
         if (e.type === 'INIT') submitting = false;
         receive(e);
     };
@@ -2191,6 +2488,9 @@ document.querySelectorAll('input[name="algorithm"]').forEach(r => r.addEventList
 $('tSelect').addEventListener('change', () => { if (!state.config) renderPanels(); });
 renderTPicker();
 
+renderInputOptions();
+setHeaderInput(circleConfigs.presets[0]);
+loadCircleConfigs();
 renderPanels();
 renderCompare();
 renderRunButton();
