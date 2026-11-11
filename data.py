@@ -134,36 +134,44 @@ def generate_dataset(size: str) -> Tuple[List[Point], List[Circle]]:
 # Length n of the generated string per size. Much longer than the circle inputs: each symbol is
 # little work, so it takes millions of them before the machines' work outweighs Spark's overhead.
 STRING_SIZES = {"small": 1_000_000, "medium": 10_000_000, "large": 30_000_000}
-# Symbols are the numbers 0 .. |Sigma| - 1, drawn uniformly
+# Symbols are the numbers 0 .. |Sigma| - 1, drawn uniformly. The default alphabet; --alphabet picks
+# another one, e.g. 1 (a string of one repeated symbol) or n (almost every symbol different).
 STRING_ALPHABET_SIZE = 1000
 # The string is generated in this many chunks, one per input partition. Fixed, so the string (and f_k)
 # is the same on any number of Pis, and it divides evenly over 1, 2, 3, 5 Pis of 4 cores (4, 8, 12, 20 cores).
 STRING_CHUNKS = 120
 
 
-def string_chunk(c: int, n: int):
+def string_chunk(c: int, n: int, alphabet: int = STRING_ALPHABET_SIZE):
     """Positions (1-based) and symbols of chunk c of the generated string of length n, as numpy arrays."""
     import numpy as np
     start, end = c * n // STRING_CHUNKS, (c + 1) * n // STRING_CHUNKS
-    symbols = np.random.default_rng([SEED, c]).integers(0, STRING_ALPHABET_SIZE, size=end - start)
+    symbols = np.random.default_rng([SEED, c]).integers(0, alphabet, size=end - start)
     return np.arange(start + 1, end + 1), symbols
 
 
-def generate_string_pairs(sc, n: int):
+def generate_string_pairs(sc, n: int, alphabet: int = STRING_ALPHABET_SIZE):
     """
     The input pairs <i; x_i> of a random string of length n, generated on the machines themselves
     (each partition makes its own chunk), so the driver does not have to send n pairs over the network.
     """
     def chunk_pairs(c):
-        positions, symbols = string_chunk(c, n)
+        positions, symbols = string_chunk(c, n, alphabet)
         return zip(positions.tolist(), symbols.tolist())
     return sc.parallelize(range(STRING_CHUNKS), STRING_CHUNKS).flatMap(chunk_pairs)
 
 
-def string_counts(n: int) -> dict:
-    """How often each symbol occurs in the generated string, counted on the driver (to check the answer)."""
+def string_counts(n: int, alphabet: int = STRING_ALPHABET_SIZE) -> list:
+    """
+    How often each symbol that occurs in the generated string occurs, counted on the driver (to check
+    the answer). Only the counts, not which symbol: with a huge alphabet a dict per symbol gets big.
+    """
     import numpy as np
-    counts = np.zeros(STRING_ALPHABET_SIZE, dtype=np.int64)
-    for c in range(STRING_CHUNKS):
-        counts += np.bincount(string_chunk(c, n)[1], minlength=STRING_ALPHABET_SIZE)
-    return {s: int(m) for s, m in enumerate(counts) if m}
+    if alphabet <= 20_000_000:
+        counts = np.zeros(alphabet, dtype=np.int64)
+        for c in range(STRING_CHUNKS):
+            counts += np.bincount(string_chunk(c, n, alphabet)[1], minlength=alphabet)
+        return counts[counts > 0].tolist()
+    # an alphabet this large would not fit as one count per symbol: count the symbols that occur instead
+    symbols = np.concatenate([string_chunk(c, n, alphabet)[1] for c in range(STRING_CHUNKS)])
+    return np.unique(symbols, return_counts=True)[1].tolist()

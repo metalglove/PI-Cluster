@@ -113,8 +113,9 @@ h2 { font-size: 18px; margin-bottom: 4px; }
 .btn-primary:disabled { background: var(--rule-strong); border-color: var(--rule-strong); color: var(--surface); }
 
 .t-picker { font-size: 13px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
-.t-picker[hidden] { display: none; }
-.t-picker select { font: inherit; border: 1px solid var(--rule-strong); border-radius: 4px; background: var(--surface); color: var(--ink); padding: 4px 6px; }
+.t-picker[hidden], .btn[hidden] { display: none; }
+.t-picker select, .t-picker input { font: inherit; border: 1px solid var(--rule-strong); border-radius: 4px; background: var(--surface); color: var(--ink); padding: 4px 6px; }
+.t-picker input[type="number"] { width: 13ch; font-family: var(--mono); }
 
 .theme-toggle { min-width: 64px; }
 
@@ -347,6 +348,7 @@ html.presenting .side-col { position: sticky; top: 12px; }
 .scaling-table .running { color: var(--ink-3); font-style: italic; }
 .scaling-table .warn { color: var(--m0); }
 .scaling-scroll { overflow-x: auto; }
+.scaling-chart[hidden] { display: none; }
 .scaling-chart { width: 100%; max-width: 640px; aspect-ratio: 16 / 9; display: block; margin-top: 18px; }
 .scaling-headline ul { margin: 10px 0 4px; padding-left: 18px; font-size: 15px; line-height: 1.5; }
 .scaling-headline b { font-weight: 600; }
@@ -388,6 +390,8 @@ html.presenting .side-col { position: sticky; top: 12px; }
 .kfm-stages { margin-top: 12px; line-height: 1.6; }
 .kfm-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: var(--c); margin: 0 4px 0 2px; vertical-align: -1px; }
 .kfm-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+.kfm-preset-note { margin: 0 0 10px; }
+.kfm-preset-note:empty { display: none; }
 .kfm-queue { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; margin: 0 0 10px; }
 .kfm-queue[hidden] { display: none; }
 .kfm-results { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; align-items: start; margin: 8px 0 14px; }
@@ -395,7 +399,10 @@ html.presenting .side-col { position: sticky; top: 12px; }
 .kb-row { display: grid; grid-template-columns: 56px minmax(0, 1fr) 120px; align-items: center; gap: 8px; margin: 6px 0; }
 .kb-track { height: 18px; display: flex; gap: 2px; }
 .kb-track span { background: var(--c); height: 100%; }
-.kb-track span:last-child { border-radius: 0 4px 4px 0; }
+.kb-track > span:last-child { border-radius: 0 4px 4px 0; }
+.kb-track .kb-stage { display: flex; background: none; }
+/* the part of a stage spent waiting for shuffle data from the other machines */
+.kb-track .kb-net, .sb-legend i.kb-net { background: repeating-linear-gradient(135deg, var(--c) 0 3px, color-mix(in srgb, var(--c) 30%, var(--surface)) 3px 6px); }
 .kb-val { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
 .kb-val small { color: var(--ink-3); }
 .kb-hw { font-size: 12px; color: var(--ink-3); }

@@ -58,6 +58,8 @@ The answer is exact; the run also prints the count done on the driver as a check
 
 Each symbol is little work, so the generated strings are long (1M, 10M or 30M symbols over 1,000 symbols) and are generated on the machines themselves, in 120 fixed chunks, so the string and f_k are the same on any number of Pis. The pairs are put in memory on the machines before the timer starts. The *Frequency moment* button in the dashboard runs the algorithm on 1, 2, … all Pis and shows the wall time per Spark stage (μ₁ | ρ₁ and μ₂ | ρ₂), the speedup against the ideal, and which machines ran the tasks.
 
+Each stage's bar is hatched for the time its tasks waited for shuffle data from the other Pis (Spark's `fetchWaitTime`), and the table shows how many MB went between the Pis. The view runs every hardware size several times and draws a box plot of the wall times, so the spread and outliers show. You can pick a custom length n and alphabet size |Σ|, save an input under a name, and try the two skewed inputs: one repeated symbol (all pairs go to one reducer) and |Σ| = n (the one reducer for $ gets almost n values). Every run is saved in `kfm_runs.json` next to `viz_server.py`, so restarting the dashboard keeps them.
+
 ![The Frequency moment view after runs on 1, 2 and 4 cores](docs/kfm-speedup.png)
 
 ## The dashboard
@@ -144,6 +146,9 @@ With `--pis N`, the job asks the master for N × 4 cores in 4-core executors, so
 | `--t` | number of thresholds for Algorithm 5 | `2` |
 | `--moment` | `kfm`: which frequency moment k to compute | `2` |
 | `--input` | `kfm`: text file whose characters are the string x | random string over 1,000 symbols, n = 1M / 10M / 30M for `--size` small / medium / large |
+| `--length` | `kfm`: length n of the random string, instead of `--size` | off |
+| `--alphabet` | `kfm`: alphabet size of the random string (1 = one repeated symbol) | `1000` |
+| `--repeats` | `kfm`: run the algorithm this many times on the same input | `1` |
 | `--cluster` | flag: run on the Pi cluster instead of locally | off |
 | `--pis` | cluster mode: number of Pis to run on | all alive workers |
 | `--cores` | local mode: number of cores to run on | all |
