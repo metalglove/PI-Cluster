@@ -25,3 +25,6 @@ checkpoints/
 kfm_runs.json
 kfm_configs.json
 *.json.tmp
+circle_runs.json
+circle_configs.json
+circle_runs/

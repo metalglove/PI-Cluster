@@ -48,11 +48,6 @@
             <label class="t-picker" id="hwPicker" hidden><span id="hwLabel">Pis</span> =
                 <select id="hwSelect" aria-label="How many Pis (or cores) to run on"></select>
             </label>
-            <div class="segmented" role="radiogroup" aria-label="Dataset size">
-                <label><input type="radio" name="jobSize" value="small" checked><span>2K pts</span></label>
-                <label><input type="radio" name="jobSize" value="medium"><span>25K pts</span></label>
-                <label><input type="radio" name="jobSize" value="large"><span>100K pts</span></label>
-            </div>
             <button id="runBtn" class="btn btn-primary">Run on cluster</button>
             <button id="compareBtn" class="btn">Compare</button>
             <button id="kfmBtn" class="btn" title="The k-th frequency moment on 1, 2, … all Pis (F)">Frequency moment</button>
@@ -61,6 +56,25 @@
             <button id="presentBtn" class="btn" title="Full screen, larger text (P)">Present</button>
             <button id="themeBtn" class="btn theme-toggle" aria-label="Toggle dark mode">Dark</button>
             <div class="conn"><span class="dot" id="connDot"></span><span id="connText">Connecting</span></div>
+        </div>
+        <div class="input-bar" id="inputBar">
+            <label class="t-picker">Input
+                <select id="ciPreset" aria-label="Which input to run on"></select>
+            </label>
+            <label class="t-picker">points =
+                <select id="ciPoints" aria-label="Number of points"></select>
+            </label>
+            <label class="t-picker">circles =
+                <input id="ciCircles" type="number" min="1" step="1" inputmode="numeric" aria-label="Number of candidate circles">
+            </label>
+            <label class="t-picker">clusters =
+                <input id="ciClusters" type="number" min="1" step="1" inputmode="numeric" aria-label="Number of clusters the points lie in">
+            </label>
+            <label class="t-picker">k =
+                <input id="ciK" class="short" type="number" min="1" step="1" inputmode="numeric" aria-label="How many circles to select">
+            </label>
+            <button class="btn" id="ciSave" title="Save points, circles, clusters and k under a name, to pick it again later">Save input</button>
+            <button class="btn" id="ciForget" hidden>Delete saved input</button>
         </div>
         <div class="analysis-queue" id="analysisQueue" hidden aria-live="polite"></div>
     </header>
@@ -181,6 +195,17 @@
                 </div>
                 <button class="btn" id="cvClose">Close (Esc)</button>
             </div>
+            <div class="kfm-controls">
+                <label class="t-picker">Saved results
+                    <select id="cvSaved" aria-label="Show the runs of an earlier analysis, without running it again"></select>
+                </label>
+                <label class="t-picker">runs per size
+                    <select id="cvRepeats" class="repeats" aria-label="How many runs per number of Pis in a full analysis">
+                        <option selected>1</option><option>2</option><option>3</option><option>5</option>
+                    </select>
+                </label>
+                <button class="btn" id="cvClear" title="Forget the saved runs of this input">Clear runs</button>
+            </div>
             <div class="cv-cols" id="cvCols"></div>
             <section class="cv-scaling" id="cvScaling">
                 <h3 id="cvScalingTitle">Speedup with more Pis</h3>
@@ -209,6 +234,17 @@
                     <button class="btn" id="suClose">Close (Esc)</button>
                 </div>
             </div>
+            <div class="kfm-controls">
+                <label class="t-picker">Saved results
+                    <select id="suSaved" aria-label="Show the runs of an earlier analysis, without running it again"></select>
+                </label>
+                <label class="t-picker">runs per size
+                    <select id="suRepeats" class="repeats" aria-label="How many runs per number of Pis">
+                        <option selected>1</option><option>2</option><option>3</option><option>5</option>
+                    </select>
+                </label>
+                <button class="btn" id="suClear" title="Forget the saved runs of this algorithm on this input">Clear runs</button>
+            </div>
             <div class="kfm-queue" id="suQueue" hidden aria-live="polite"></div>
             <p class="hint scaling-progress" id="suProgress" hidden></p>
             <div class="scaling-headline" id="suHeadline"></div>
@@ -216,6 +252,7 @@
                 <div class="scaling-bars" id="suBars" aria-label="Wall time per hardware size"></div>
                 <canvas class="scaling-chart" id="suChart" hidden aria-label="Speedup against the number of Pis"></canvas>
             </div>
+            <canvas class="scaling-chart" id="suBoxes" hidden aria-label="Wall time of every run per number of Pis, as box plots"></canvas>
             <div class="scaling-scroll"><table class="scaling-table" id="suTable"></table></div>
             <p class="hint scaling-why" id="suWhy"></p>
         </div>

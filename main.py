@@ -18,6 +18,7 @@ USAGE (local mode):
     python main.py --algorithm kfm --moment 2 --size small
     python main.py --algorithm kfm --moment 3 --input some_text.txt
     python main.py --algorithm kfm --moment 2 --length 5000000 --alphabet 1 --repeats 5
+    python main.py --algorithm theorem8 --points 50000 --circles 3000 --clusters 30 --k 15
 
 USAGE (cluster mode):
     python main.py --cluster --algorithm theorem8 --size medium
@@ -26,6 +27,7 @@ USAGE (with the visualization server):
     python main.py --ui-url http://localhost:8000 --size medium
 
 SIZE OPTIONS: small (2K points, 500 circles), medium (25K, 2000), large (100K, 5000)
+              or a custom input: --points, --circles, --clusters and --k replace the size's numbers
               for kfm: a string of 1M, 10M or 30M symbols, or --length N; --alphabet A and --repeats R
 """
 
@@ -43,7 +45,7 @@ import zipfile
 from typing import Optional
 from pyspark.sql import SparkSession
 
-from data import SIZE_CONFIGS, BOUNDS, RADIUS_RANGE, CLUSTER_STD, SEED, generate_dataset
+from data import SIZE_CONFIGS, BOUNDS, RADIUS_RANGE, CLUSTER_STD, SEED, generate_dataset, dataset_config, preset_name
 from viz_client import UIClient
 from algorithms.greedy import greedy_with_guesses
 from algorithms.theorem8 import theorem_8_combined
@@ -324,6 +326,10 @@ def main():
                         help="greedy (threshold greedy), theorem8 (Algorithms 6 + 7), alg5 (Algorithm 5) "
                              "or kfm (k-th frequency moment of a string)")
     parser.add_argument("--t", type=int, default=2, help="number of thresholds for Algorithm 5")
+    parser.add_argument("--points", type=int, help="circle cover: number of points (instead of the size's)")
+    parser.add_argument("--circles", type=int, help="circle cover: number of candidate circles (instead of the size's)")
+    parser.add_argument("--clusters", type=int, help="circle cover: number of clusters the points lie in (instead of the size's)")
+    parser.add_argument("--k", type=int, help=f"circle cover: how many circles to select (default {K})")
     parser.add_argument("--moment", type=int, default=2, help="kfm: which frequency moment k to compute")
     parser.add_argument("--input", type=str, help="kfm: text file whose characters are the string x "
                                                   "(default: a random string of 1M, 10M or 30M symbols for small, medium, large)")
@@ -338,11 +344,14 @@ def main():
     args.alphabet = max(1, args.alphabet)
     args.repeats = max(1, args.repeats)
 
-    config = SIZE_CONFIGS[args.size]
+    config = dataset_config(args.size, args.points, args.circles, args.clusters)
+    k = max(1, args.k or K)
+    # the size's name, or "custom" when --points, --circles, --clusters or --k changed its numbers
+    size_name = (preset_name(config) if k == K else None) or "custom"
 
     # The paper's m machines, each holding about n / m = sqrt(nk) circles: m = sqrt(n / k), rounded up.
     # It depends only on the input, so the result is the same however many Pis or cores run the m partitions.
-    num_machines = math.ceil(math.sqrt(config["N_CIRCLES"] / K))
+    num_machines = math.ceil(math.sqrt(config["N_CIRCLES"] / k))
 
     # How much hardware runs them; the UI compares wall times across these to show the speedup
     if args.cluster:
@@ -359,10 +368,10 @@ def main():
     print(f"Circle Cover Problem - {args.algorithm}")
     print("=" * 60)
     print(f"Mode: {'CLUSTER' if args.cluster else 'LOCAL'}")
-    print(f"Dataset Size: {args.size.upper()}")
+    print(f"Dataset Size: {size_name.upper()}")
     print(f"Points: {config['N_POINTS']} (in {config['N_CLUSTERS']} clusters)")
     print(f"Circles: {config['N_CIRCLES']} (radius {RADIUS_RANGE[0]}-{RADIUS_RANGE[1]})")
-    print(f"k = {K}, epsilon = {EPSILON}" + (f", t = {args.t}" if args.algorithm == "alg5" else ""))
+    print(f"k = {k}, epsilon = {EPSILON}" + (f", t = {args.t}" if args.algorithm == "alg5" else ""))
     print(f"Machines (partitions) m = {num_machines}, running on " +
           (f"{hardware['pis']} Pis" if "pis" in hardware else f"{hardware['cores']} cores" if hardware else "all Pis"))
 
@@ -385,7 +394,7 @@ def main():
 
     # 2. Data
     print("\nGenerating data...")
-    points, circles = generate_dataset(args.size)
+    points, circles = generate_dataset(args.size, config)
     print(f"Generated {len(points)} points and {len(circles)} circles")
 
     # 3. UI
@@ -394,16 +403,20 @@ def main():
         shown = points if len(points) <= 5000 else random.Random(0).sample(points, 5000)
         extra = {"machines": num_machines, **hardware}
         if args.algorithm == "theorem8":
-            guesses = int(math.ceil((1.0 / EPSILON) * math.log(K)))
+            guesses = int(math.ceil((1.0 / EPSILON) * math.log(k)))
         else:
             # one guess per estimate of OPT, as greedy_with_guesses and algorithm_5_multi_round count them
-            guesses = int(math.ceil(math.log(K) / math.log(1 + EPSILON))) + 1
+            guesses = int(math.ceil(math.log(k) / math.log(1 + EPSILON))) + 1
             if args.algorithm == "alg5":
                 extra["t"] = args.t
-        ui.send_init(shown, BOUNDS, len(shown), len(circles), K, EPSILON,
+        ui.send_init(shown, BOUNDS, len(shown), len(circles), k, EPSILON,
                      total_points=len(points), total_guesses=guesses, algorithm=args.algorithm,
                      # identifies the input, so the UI only compares runs on the same data
-                     dataset=f"{args.size}/seed{SEED}/std{CLUSTER_STD}", **extra)
+                     dataset=f"{config['N_POINTS']}p-{config['N_CIRCLES']}c-{config['N_CLUSTERS']}cl-k{k}/seed{SEED}/std{CLUSTER_STD}",
+                     # the numbers the dashboard saves the run under, and the size's name (or "custom")
+                     input={"points": config["N_POINTS"], "circles": config["N_CIRCLES"],
+                            "clusters": config["N_CLUSTERS"], "k": k},
+                     size=size_name, **extra)
 
     # 4. Algorithm
     print(f"\nRunning {args.algorithm}...")
@@ -411,7 +424,7 @@ def main():
 
     started = time.time()
     if args.algorithm == "greedy":
-        sol, cov, best_j = greedy_with_guesses(circles, points, K, EPSILON, spark, ui)
+        sol, cov, best_j = greedy_with_guesses(circles, points, k, EPSILON, spark, ui)
         elapsed = time.time() - started
         print(f"  Best guess: j = {best_j}")
         if ui:
@@ -419,10 +432,10 @@ def main():
             ui.send_final_solution(sol, cov, best_j, len(points), elapsed_s=round(elapsed, 1))
     elif args.algorithm == "alg5":
         # Algorithms 5 and 6/7 report their own final solution to the UI
-        sol, cov = algorithm_5_multi_round(sc, circles, points, k=K, t=args.t, epsilon=EPSILON,
+        sol, cov = algorithm_5_multi_round(sc, circles, points, k=k, t=args.t, epsilon=EPSILON,
                                            seed=ALGORITHM_SEED, num_machines=num_machines, ui=ui)
     else:
-        sol, cov = theorem_8_combined(sc, circles, points, k=K, epsilon=EPSILON,
+        sol, cov = theorem_8_combined(sc, circles, points, k=k, epsilon=EPSILON,
                                       seed=ALGORITHM_SEED, num_machines=num_machines, ui=ui)
     elapsed = time.time() - started
 

@@ -60,6 +60,8 @@ Each symbol is little work, so the generated strings are long (1M, 10M or 30M sy
 
 Each stage's bar is hatched for the time its tasks waited for shuffle data from the other Pis (Spark's `fetchWaitTime`), and the table shows how many MB went between the Pis. The view runs every hardware size several times and draws a box plot of the wall times, so the spread and outliers show. You can pick a custom length n and alphabet size |Σ|, save an input under a name, and try the two skewed inputs: one repeated symbol (all pairs go to one reducer) and |Σ| = n (the one reducer for $ gets almost n values). Every run is saved in `kfm_runs.json` next to `viz_server.py`, so restarting the dashboard keeps them.
 
+The circle cover algorithms work the same way. The input bar under the header picks the number of points (2K, 10K, 25K, 100K, 500K, 1M or 10M) and takes any number of circles, clusters and k; *Save input* keeps it under a name. Every finished run is saved in `circle_runs.json` (its events in `circle_runs/`), so *Compare* and *Speedup* can show an earlier analysis again from *Saved results* without running it, and *Play this run* replays a saved run in the main view. *Runs per size* runs every hardware size several times; the views then show the median run, and Speedup draws a box plot of the wall times.
+
 ![The Frequency moment view after runs on 1, 2 and 4 cores](docs/kfm-speedup.png)
 
 ## The dashboard
@@ -143,6 +145,7 @@ With `--pis N`, the job asks the master for N × 4 cores in 4-core executors, so
 |--------|--------|---------|
 | `--algorithm` | `greedy`, `theorem8`, `alg5`, `kfm` | `greedy` |
 | `--size` | `small` (2K points, 500 circles), `medium` (25K, 2,000), `large` (100K, 5,000) | `small` |
+| `--points`, `--circles`, `--clusters`, `--k` | circle cover: a custom input; each one replaces that number of `--size` | the size's numbers, k = 10 |
 | `--t` | number of thresholds for Algorithm 5 | `2` |
 | `--moment` | `kfm`: which frequency moment k to compute | `2` |
 | `--input` | `kfm`: text file whose characters are the string x | random string over 1,000 symbols, n = 1M / 10M / 30M for `--size` small / medium / large |

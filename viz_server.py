@@ -11,6 +11,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from data import SIZE_CONFIGS
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("VizServer")
@@ -28,6 +30,12 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Saved frequency moment runs and the custom inputs saved in its view (next to main.py, not in git)
 KFM_RUNS_FILE = os.path.join(SCRIPT_DIR, "kfm_runs.json")
 KFM_CONFIGS_FILE = os.path.join(SCRIPT_DIR, "kfm_configs.json")
+# Saved circle cover runs: one summary per finished run (wall time, coverage, rounds, input) in
+# CIRCLE_RUNS_FILE, and every run's events in CIRCLE_RUNS_DIR, so a run can be shown again without
+# running it. The inputs saved under a name are in CIRCLE_CONFIGS_FILE. Not in git.
+CIRCLE_RUNS_FILE = os.path.join(SCRIPT_DIR, "circle_runs.json")
+CIRCLE_RUNS_DIR = os.path.join(SCRIPT_DIR, "circle_runs")
+CIRCLE_CONFIGS_FILE = os.path.join(SCRIPT_DIR, "circle_configs.json")
 
 
 def load_json(path: str, default):
@@ -52,8 +60,10 @@ class ConnectionManager:
         self.recorded_events: List[dict] = []
         # algorithm -> events of its latest run, for the UI's side-by-side comparison
         self.runs: dict = {}
-        # wall time and coverage of the latest finished run per input, algorithm and hardware size
-        self.scaling: dict = {}
+        # every finished circle cover run: wall time, coverage, rounds, its input and hardware size, saved
+        # to CIRCLE_RUNS_FILE (its events to CIRCLE_RUNS_DIR) so they survive a restart of the dashboard
+        self.circle_runs: list = load_json(CIRCLE_RUNS_FILE, [])
+        self.current_run_id: Optional[str] = None   # the saved run the current events belong to
         # every run of the k-th frequency moment (KFM_RESULT events), saved to KFM_RUNS_FILE so they
         # survive a restart of the dashboard; the view groups them by n, |Sigma|, k and hardware size
         self.kfm: list = load_json(KFM_RUNS_FILE, [])
@@ -82,21 +92,31 @@ class ConnectionManager:
             return
         if data.get('type') == 'INIT':
             self.recorded_events = []
+            self.current_run_id = None
             algorithm = (data.get('config') or {}).get('algorithm', 'greedy')
             self.runs[algorithm] = self.recorded_events   # same list: later events land in both
         self.recorded_events.append(data)
-        if data.get('type') == 'FINAL_SOLUTION' and self.recorded_events[0].get('type') == 'INIT':
+        if not self.recorded_events or self.recorded_events[0].get('type') != 'INIT':
+            return
+        if data.get('type') == 'FINAL_SOLUTION':
             config = self.recorded_events[0].get('config') or {}
             unit = "pis" if "pis" in config else "cores" if "cores" in config else None
-            if unit and data.get('elapsed_s') is not None:
-                entry = {"dataset": config.get("dataset"), "algorithm": config.get("algorithm", "greedy"),
-                         "t": config.get("t"), "unit": unit, "parallel": config[unit],
-                         "cores_per_pi": config.get("cores_per_pi"), "machines": config.get("machines"),
-                         "rounds": self.rounds(),
-                         "work_s": self.work_seconds(config.get("cores_per_pi") or config.get("cores") or 1),
-                         "elapsed_s": data["elapsed_s"], "coverage": data.get("coverage")}
-                key = "|".join(str(entry[k]) for k in ("dataset", "algorithm", "t", "unit", "parallel"))
-                self.scaling[key] = entry
+            run_id = f"{int(time.time() * 1000)}-{config.get('algorithm', 'greedy')}"
+            entry = {"id": run_id, "at": time.time(), "input": config.get("input"), "size": config.get("size"),
+                     "dataset": config.get("dataset"), "algorithm": config.get("algorithm", "greedy"),
+                     "t": config.get("t"), "unit": unit, "parallel": config.get(unit) if unit else None,
+                     "cores_per_pi": config.get("cores_per_pi"), "machines": config.get("machines"),
+                     "rounds": self.rounds(),
+                     "work_s": self.work_seconds(config.get("cores_per_pi") or config.get("cores") or 1),
+                     "elapsed_s": data.get("elapsed_s"), "coverage": data.get("coverage"),
+                     "total_points": data.get("total_points")}
+            self.circle_runs.append(entry)
+            save_json(CIRCLE_RUNS_FILE, self.circle_runs)
+            self.current_run_id = run_id
+        if self.current_run_id and data.get('type') in ('FINAL_SOLUTION', 'FINISHED'):
+            # the run's events, to show it again later (written again at FINISHED, so that one is in too)
+            os.makedirs(CIRCLE_RUNS_DIR, exist_ok=True)
+            save_json(os.path.join(CIRCLE_RUNS_DIR, f"{self.current_run_id}.json"), self.recorded_events)
         
     def rounds(self) -> int:
         """MapReduce rounds of the current run, counted as the UI counts them (numbered rounds or one per job)."""
@@ -157,10 +177,45 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
+def run_events(run_id: str) -> Optional[list]:
+    """The saved events of one circle cover run, or None."""
+    if not run_id or "/" in run_id or "\\" in run_id or run_id.startswith("."):
+        return None
+    return load_json(os.path.join(CIRCLE_RUNS_DIR, f"{run_id}.json"), None)
+
+
+def same_input(run: dict, inp: dict) -> bool:
+    got = run.get("input") or {}
+    return all(got.get(key) == inp.get(key) for key in ("points", "circles", "clusters", "k"))
+
+
 @app.get("/runs")
-async def get_runs():
-    """Latest run of each algorithm, so the UI can compare them side by side."""
-    return manager.runs
+async def get_runs(points: Optional[int] = None, circles: Optional[int] = None, clusters: Optional[int] = None,
+                   k: Optional[int] = None, t: Optional[int] = None):
+    """
+    The latest finished run of each algorithm on one input (and t for Algorithm 5), from the saved runs,
+    so the UI can compare them side by side: {algorithm: {"id", "events"}}. Without an input, the latest
+    run of each algorithm in memory, whatever its input.
+    """
+    if points is None:
+        return {a: {"id": None, "events": events} for a, events in manager.runs.items()}
+    inp = {"points": points, "circles": circles, "clusters": clusters, "k": k}
+    latest = {}
+    for run in manager.circle_runs:
+        if same_input(run, inp) and (run.get("algorithm") != "alg5" or t is None or run.get("t") == t):
+            latest[run.get("algorithm")] = run   # the list is in the order the runs finished
+    found = {}
+    for algorithm, run in latest.items():
+        events = run_events(run["id"])
+        if events:
+            found[algorithm] = {"id": run["id"], "events": events}
+    return found
+
+
+@app.get("/runs/{run_id}")
+async def get_run(run_id: str):
+    """The events of one saved run, to play it again in the main view."""
+    return run_events(run_id) or []
 
 @app.post("/update")
 async def update_event(request: Request):
@@ -182,17 +237,21 @@ IS_PI_CLUSTER = os.path.exists("/home/pi/spark-env/bin/python")
 
 
 def build_command(algorithm: str, job_size: str, t: int, parallel: Optional[int], moment: int = 2,
-                  kfm_input: Optional[dict] = None) -> List[str]:
+                  kfm_input: Optional[dict] = None, circle_input: Optional[dict] = None) -> List[str]:
     """
     main.py runs every algorithm: greedy (threshold greedy, many rounds), theorem8 (Algorithms 6 + 7,
     two rounds), alg5 (Algorithm 5, 2t + 2 rounds) or kfm (the k-th frequency moment, k = moment).
     parallel is the number of Pis (cluster) or cores (local) to run on; None uses all of them.
     kfm_input is the string for kfm: its length n, alphabet size and how many times to run it.
+    circle_input is the input of the circle cover algorithms: numbers of points, circles and clusters, and k.
     """
     main_py_path = os.path.join(SCRIPT_DIR, "main.py")
     extra_args = ["--algorithm", algorithm]
     if algorithm == "alg5":
         extra_args += ["--t", str(t)]
+    if circle_input and algorithm in ALGORITHMS:
+        extra_args += ["--points", str(circle_input["points"]), "--circles", str(circle_input["circles"]),
+                       "--clusters", str(circle_input["clusters"]), "--k", str(circle_input["k"])]
     if algorithm == "kfm":
         extra_args += ["--moment", str(moment)]
         if kfm_input:
@@ -212,8 +271,8 @@ def build_command(algorithm: str, job_size: str, t: int, parallel: Optional[int]
 
 
 def start_job(algorithm: str, job_size: str, t: int, parallel: Optional[int], moment: int = 2,
-              kfm_input: Optional[dict] = None) -> subprocess.Popen:
-    cmd = build_command(algorithm, job_size, t, parallel, moment, kfm_input)
+              kfm_input: Optional[dict] = None, circle_input: Optional[dict] = None) -> subprocess.Popen:
+    cmd = build_command(algorithm, job_size, t, parallel, moment, kfm_input, circle_input)
     logger.info(f"Command: {' '.join(cmd)}")
     # Run as subprocess. Output goes to a log file: an unread PIPE fills up and stalls the job.
     log_path = os.path.join(SCRIPT_DIR, f"last_run_{algorithm}.log")
@@ -230,7 +289,7 @@ def start_job(algorithm: str, job_size: str, t: int, parallel: Optional[int], mo
 
 def parse_run_request(body: dict) -> Tuple[str, str, int]:
     job_size = body.get('size', 'small')
-    if job_size not in ('small', 'medium', 'large'):
+    if job_size not in SIZE_CONFIGS:
         job_size = 'small'
     algorithm = body.get('algorithm', 'greedy')
     if algorithm not in ALGORITHMS:
@@ -260,7 +319,8 @@ async def run_algorithm(request: Request):
         if analysis["running"]:
             return {"status": "busy", "message": "A full analysis is running"}
         job_size, algorithm, t = parse_run_request(body)
-        process = start_job(algorithm, job_size, t, parse_parallel(body.get('parallel')))
+        process = start_job(algorithm, job_size, t, parse_parallel(body.get('parallel')),
+                            circle_input=parse_circle_input(body))
         return {"status": "started", "pid": process.pid, "size": job_size, "algorithm": algorithm}
     except Exception as e:
         logger.error(f"Failed to start job: {e}")
@@ -294,16 +354,16 @@ def parallel_ladder() -> List[int]:
 # kind is "circles" (every circle cover algorithm), "speedup" (one of them, in algorithm) or "kfm"
 # (only the k-th frequency moment, with k = moment)
 analysis = {"running": False, "kind": "circles", "algorithm": None, "size": None, "t": 2, "moment": 2, "plan": [], "done": 0,
-            "current": None, "unit": None}
+            "current": None, "unit": None, "input": None, "repeats": 1}
 analysis_job: dict = {"task": None, "process": None}
 
 
-async def run_analysis(job_size: str, t: int, plan: List[Tuple[str, int]], moment: int = 2,
-                       kfm_input: Optional[dict] = None):
+async def run_analysis(job_size: str, t: int, plan: List[tuple], moment: int = 2,
+                       kfm_input: Optional[dict] = None, circle_input: Optional[dict] = None):
     try:
-        for algorithm, parallel in plan:
+        for algorithm, parallel, *_ in plan:
             analysis["current"] = {"algorithm": algorithm, "parallel": parallel, "started_at": time.time()}
-            process = start_job(algorithm, job_size, t, parallel, moment, kfm_input)
+            process = start_job(algorithm, job_size, t, parallel, moment, kfm_input, circle_input)
             analysis_job["process"] = process
             while process.poll() is None:
                 await asyncio.sleep(1)
@@ -324,12 +384,18 @@ async def start_analysis(request: Request):
     except Exception:
         body = {}
     job_size, _, t = parse_run_request(body)
-    # With "algorithm", only that one (the Speedup view); otherwise every algorithm (Full analysis)
+    circle_input = parse_circle_input(body)
+    repeats = parse_repeats(body)
+    # With "algorithm", only that one (the Speedup view); otherwise every algorithm (Full analysis).
+    # Every hardware size runs `repeats` times, so the views can show the spread of the wall times.
     only = body.get("algorithm") if body.get("algorithm") in ALGORITHMS else None
-    plan = [(a, n) for a in ([only] if only else ALGORITHMS) for n in parallel_ladder()]
-    analysis.update(running=True, kind="speedup" if only else "circles", algorithm=only, size=job_size, t=t,
-                    plan=plan, done=0, current=None, unit="pis" if IS_PI_CLUSTER else "cores")
-    analysis_job["task"] = asyncio.create_task(run_analysis(job_size, t, plan))
+    plan = [(a, n, r) for a in ([only] if only else ALGORITHMS) for n in parallel_ladder()
+            for r in range(1, repeats + 1)]
+    analysis.update(running=True, kind="speedup" if only else "circles", algorithm=only,
+                    size=job_size if body.get("size") in SIZE_CONFIGS else "custom", t=t,
+                    plan=plan, done=0, current=None, unit="pis" if IS_PI_CLUSTER else "cores",
+                    input=circle_input, repeats=repeats)
+    analysis_job["task"] = asyncio.create_task(run_analysis(job_size, t, plan, circle_input=circle_input))
     return {"status": "started", **analysis}
 
 
@@ -347,11 +413,98 @@ async def start_kfm_analysis(request: Request):
     except Exception:
         moment = 2
     kfm_input = parse_kfm_input(body)
-    plan = [("kfm", n) for n in parallel_ladder()]
+    plan = [("kfm", n, 1) for n in parallel_ladder()]
     analysis.update(running=True, kind="kfm", size="custom", moment=moment, plan=plan, done=0, current=None,
                     unit="pis" if IS_PI_CLUSTER else "cores", **kfm_input)
     analysis_job["task"] = asyncio.create_task(run_analysis("small", 2, plan, moment, kfm_input))
     return {"status": "started", **analysis}
+
+
+# ---------- Inputs of the circle cover algorithms ----------
+
+# The numbers of points the dashboard offers, and the most circles, clusters and k it accepts
+CIRCLE_POINTS = [2_000, 10_000, 25_000, 100_000, 500_000, 1_000_000, 10_000_000]
+CIRCLE_MAX = {"circles": 100_000, "clusters": 10_000, "k": 100}
+PRESET_K = 10   # main.py's K: the k of the small, medium and large inputs
+
+
+def parse_circle_input(body: dict) -> dict:
+    """
+    The input to run the circle cover algorithms on: points, circles, clusters and k. Numbers missing
+    from the request come from its size (small, medium or large).
+    """
+    preset = SIZE_CONFIGS.get(body.get("size"), SIZE_CONFIGS["small"])
+
+    def number(key, default, lo, hi):
+        try:
+            return max(lo, min(hi, int(body.get(key) or default)))
+        except (TypeError, ValueError):
+            return default
+    points = number("points", preset["N_POINTS"], 1, CIRCLE_POINTS[-1])
+    return {"points": points,
+            "circles": number("circles", preset["N_CIRCLES"], 1, CIRCLE_MAX["circles"]),
+            "clusters": number("clusters", preset["N_CLUSTERS"], 1, min(points, CIRCLE_MAX["clusters"])),
+            "k": number("k", PRESET_K, 1, CIRCLE_MAX["k"])}
+
+
+def parse_repeats(body: dict) -> int:
+    try:
+        return max(1, min(10, int(body.get("repeats", 1))))
+    except (TypeError, ValueError):
+        return 1
+
+
+@app.get("/circle/configs")
+async def get_circle_configs():
+    """The fixed inputs (small, medium, large), the inputs saved under a name, and what the dashboard accepts."""
+    presets = [{"id": name, "points": c["N_POINTS"], "circles": c["N_CIRCLES"], "clusters": c["N_CLUSTERS"],
+                "k": PRESET_K} for name, c in SIZE_CONFIGS.items()]
+    return {"presets": presets, "saved": load_json(CIRCLE_CONFIGS_FILE, []), "points": CIRCLE_POINTS, "max": CIRCLE_MAX}
+
+
+@app.post("/circle/configs")
+async def save_circle_config(request: Request):
+    """Save an input (name, points, circles, clusters, k), or replace the one with the same name."""
+    body = await request.json()
+    name = str(body.get("name") or "").strip()[:60]
+    if not name:
+        return {"status": "error", "message": "A configuration needs a name"}
+    entry = {"name": name, **parse_circle_input(body)}
+    configs = [c for c in load_json(CIRCLE_CONFIGS_FILE, []) if c.get("name") != name] + [entry]
+    save_json(CIRCLE_CONFIGS_FILE, configs)
+    return {"status": "saved", "saved": configs}
+
+
+@app.post("/circle/configs/delete")
+async def delete_circle_config(request: Request):
+    body = await request.json()
+    configs = [c for c in load_json(CIRCLE_CONFIGS_FILE, []) if c.get("name") != body.get("name")]
+    save_json(CIRCLE_CONFIGS_FILE, configs)
+    return {"status": "deleted", "saved": configs}
+
+
+@app.post("/circle/runs/delete")
+async def delete_circle_runs(request: Request):
+    """Forget the saved runs of one input: of every algorithm, or only of "algorithm" (and its t for Algorithm 5)."""
+    body = await request.json()
+    inp = parse_circle_input(body)
+    only = body.get("algorithm")
+
+    def matches(run):
+        if not same_input(run, inp):
+            return False
+        if only and run.get("algorithm") != only:
+            return False
+        return not (only == "alg5" and body.get("t") is not None and run.get("t") != body.get("t"))
+    removed = [r for r in manager.circle_runs if matches(r)]
+    manager.circle_runs[:] = [r for r in manager.circle_runs if not matches(r)]
+    save_json(CIRCLE_RUNS_FILE, manager.circle_runs)
+    for run in removed:
+        try:
+            os.remove(os.path.join(CIRCLE_RUNS_DIR, f"{run['id']}.json"))
+        except (OSError, KeyError, TypeError):
+            pass
+    return {"status": "deleted", "removed": len(removed)}
 
 
 KFM_MAX_N = 100_000_000   # longer strings take too long (and too much memory on the driver's check)
@@ -421,7 +574,7 @@ async def stop_analysis():
 @app.get("/analysis")
 async def get_analysis():
     """Progress of the full analysis, and the wall time of every finished run per hardware size."""
-    return {**analysis, "now": time.time(), "results": list(manager.scaling.values()),
+    return {**analysis, "now": time.time(), "results": [r for r in manager.circle_runs if r.get("unit") and r.get("elapsed_s") is not None],
             "kfm_results": manager.kfm}
 
 
