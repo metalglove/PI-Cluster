@@ -1711,10 +1711,51 @@ async function loadKfmConfigs() {
     kfmOptions();
 }
 
+// Every input (n, |Σ|, k) and hardware kind that has saved runs, newest first: an analysis that already ran,
+// to show again without running it (viz_server keeps every run in kfm_runs.json)
+function kfmSavedResults() {
+    const by = new Map();
+    (analysis.kfm_results || []).filter(r => r.parallel && r.n).forEach(r => {
+        const key = `${r.n}|${r.alphabet ?? 1000}|${r.k}|${r.unit}`;
+        const e = by.get(key) || { key, n: r.n, alphabet: r.alphabet ?? 1000, k: r.k, unit: r.unit, sizes: new Set(), runs: 0, failed: 0, at: 0 };
+        e.sizes.add(r.parallel);
+        e.runs += 1;
+        if (r.error) e.failed += 1;
+        e.at = Math.max(e.at, r.at || 0);
+        by.set(key, e);
+    });
+    return [...by.values()].sort((a, b) => b.at - a.at);
+}
+function kfmSavedOptions() {
+    const saved = kfmSavedResults();
+    const when = t => t ? new Date(t * 1000).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+    const inp = kfmInput();
+    const current = saved.find(e => e.n === inp.n && e.alphabet === inp.alphabet && e.k === inp.k);
+    $('kfmSaved').innerHTML = (current ? '' : '<option value="">—</option>') + saved.map(e => {
+        const sizes = [...e.sizes].sort((a, b) => a - b);
+        const hwRange = sizes.length > 1 ? `${sizes[0]}–${sizes[sizes.length - 1]}` : `${sizes[0]}`;
+        return `<option value="${e.key}">n = ${shortCount(e.n)}, |Σ| = ${shortCount(e.alphabet)}, k = ${e.k} · ` +
+            `${hwRange} ${e.unit === 'pis' ? 'Pis' : 'cores'}, ${e.runs} run${e.runs === 1 ? '' : 's'}` +
+            `${e.failed ? ` (${e.failed} failed)` : ''} · ${when(e.at)}</option>`;
+    }).join('');
+    if (!saved.length) $('kfmSaved').innerHTML = '<option value="">none yet</option>';
+    $('kfmSaved').value = current ? current.key : '';
+}
+function kfmLoadSaved(e) {
+    kfmSetFields(e.n, e.alphabet);
+    $('kfmK').value = String(e.k);
+    kfmTouched = true;
+}
+
 async function showKfm(on) {
     $('kfmView').hidden = !on;
     if (!on) return;
     await Promise.all([refreshAnalysis(), loadKfmConfigs()]);
+    // Opening the view shows the newest saved result, unless an analysis is running or was just run
+    if (!kfmFollowsAnalysis() && !kfmTouched) {
+        const latest = kfmSavedResults()[0];
+        if (latest) kfmLoadSaved(latest);
+    }
     renderKfm();
 }
 
@@ -1803,7 +1844,7 @@ function renderKfm() {
     btn.textContent = mineRunning ? `Stop (${analysis.done + 1} of ${analysis.plan.length})`
         : `Run on 1, 2, … all ${U}`;
     btn.disabled = !wsOpen || (analysis.running && !mineRunning) || (!analysis.running && runInProgress());
-    document.querySelectorAll('#kfmPreset, #kfmN, #kfmAlphabet, #kfmK, #kfmRepeats, #kfmClear')
+    document.querySelectorAll('#kfmSaved, #kfmPreset, #kfmN, #kfmAlphabet, #kfmK, #kfmRepeats, #kfmClear')
         .forEach(el => { el.disabled = mineRunning; });
     if (kfmFollowsAnalysis()) {
         // the pickers show what the results below were run with
@@ -1813,6 +1854,7 @@ function renderKfm() {
     }
     const m = kfmMatch(kfmField('kfmN'), kfmField('kfmAlphabet'));
     $('kfmPreset').value = m.value;
+    kfmSavedOptions();
     $('kfmForget').hidden = !m.saved;
     $('kfmPresetNote').textContent = (m.preset && m.preset.note) || '';
     $('kfmQueue').hidden = !mineRunning;
@@ -1963,6 +2005,11 @@ const escapeText = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&l
 $('kfmBtn').addEventListener('click', () => showKfm(true));
 $('kfmClose').addEventListener('click', () => showKfm(false));
 $('kfmView').addEventListener('click', e => { if (e.target === $('kfmView')) showKfm(false); });
+$('kfmSaved').addEventListener('change', () => {
+    const e = kfmSavedResults().find(e => e.key === $('kfmSaved').value);
+    if (e) kfmLoadSaved(e);
+    renderKfm();
+});
 $('kfmPreset').addEventListener('change', () => {
     const v = $('kfmPreset').value;
     const p = KFM_PRESETS.find(p => p.id === v), c = kfmConfigs.find(c => `saved:${c.name}` === v);
